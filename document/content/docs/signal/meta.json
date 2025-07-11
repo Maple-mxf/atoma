@@ -1,0 +1,10 @@
+{
+  "title": "Signal",
+  "description": "The docs Distribute Signal",
+  "icon": "Building",
+  "root": true,
+  "pages": [
+    "rwlock",
+    "test"
+  ]
+}
