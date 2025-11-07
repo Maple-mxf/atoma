@@ -1,0 +1,404 @@
+package atoma.core.internal.lock;
+
+import atoma.api.AtomaException;
+import atoma.api.OperationTimeoutException;
+import atoma.api.coordination.CoordinationStore;
+import atoma.api.coordination.ResourceChangeEvent;
+import atoma.api.coordination.Subscription;
+import atoma.api.coordination.command.Command;
+import atoma.api.coordination.command.LockCommand;
+import atoma.api.coordination.command.ReadWriteLockCommand;
+import atoma.api.lock.ReadLock;
+import atoma.api.lock.ReadWriteLock;
+import atoma.api.lock.WriteLock;
+import atoma.core.internal.ThreadUtils;
+
+import java.io.Closeable;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+
+/**
+ * The default client-side implementation of the {@link atoma.api.lock.ReadWriteLock} interface.
+ *
+ * <h3>Architectural Overview</h3>
+ *
+ * This class acts as a factory and container for the concrete {@link ReadLock} and {@link
+ * WriteLock} implementations. It manages the state shared between both lock types, including the
+ * connection to the {@link CoordinationStore} and the local concurrency primitives used for thread
+ * coordination.
+ *
+ * <h4>Shared Local State &amp; Dual Conditions</h4>
+ *
+ * To ensure proper interaction between waiting readers and writers, this class uses a single,
+ * shared, fair {@link ReentrantLock} to protect local state. It maintains two distinct {@link
+ * Condition} objects:
+ *
+ * <ul>
+ *   <li><b>readerCondition:</b> Threads waiting to acquire a read lock will wait on this condition.
+ *   <li><b>writerCondition:</b> Threads waiting to acquire a write lock will wait on this
+ *       condition.
+ * </ul>
+ *
+ * <h4>Internal Implementation</h4>
+ *
+ * Both the {@code ReadLock} and {@code WriteLock} are implemented as inner classes extending a
+ * common {@code AbstractLock} base class. This abstract class encapsulates the complex logic for
+ * re-entrancy, optimistic acquisition attempts, exception handling, and waiting on conditions, thus
+ * maximizing code reuse. The concrete implementations only need to provide the specific {@link
+ * atoma.api.coordination.command.Command} to be executed for their respective operations.
+ *
+ * @see atoma.core.internal.lock.DefaultReadWriteLock.AbstractLock
+ * @see atoma.api.lock.ReadWriteLock
+ */
+public class DefaultReadWriteLock implements ReadWriteLock, AutoCloseable {
+
+  // --- Shared State for both Read and Write Locks ---
+  private final String resourceId;
+  private final String leaseId;
+  private final CoordinationStore coordination;
+  private final Subscription subscription;
+  private final ReentrantLock localLock = new ReentrantLock(true);
+
+  // Separate conditions for readers and writers for fine-grained, high-performance signaling.
+  private final Condition readerCondition = localLock.newCondition();
+  private final Condition writerCondition = localLock.newCondition();
+
+  private final ReadLockImpl readLock;
+  private final WriteLockImpl writeLock;
+
+  /**
+   * Constructs a new DefaultReadWriteLock for a given resource.
+   *
+   * <p>This constructor initializes the shared state for the lock and establishes a single,
+   * long-lived subscription to the resource's change stream in the {@link CoordinationStore}.
+   *
+   * <h4>Subscription and Signaling Logic</h4>
+   *
+   * The subscription listener is the core of the client-side waiting mechanism. It implements a
+   * sophisticated, writer-preference signaling strategy to ensure both correctness and high
+   * performance under contention:
+   *
+   * <ol>
+   *   <li>The listener reacts to {@code UPDATE} and {@code DELETE} events on the lock document.
+   *   <li>It inspects the event payload to determine if the lock state has changed in a way that
+   *       would permit new acquisitions (e.g., a write lock was released, or the last read lock was
+   *       released).
+   *   <li><b>Writer-Preference Policy:</b> Upon such a change, it checks if any threads are waiting
+   *       on the {@code writerCondition}.
+   *       <ul>
+   *         <li>If writers are waiting, it calls {@code signal()} on the {@code writerCondition},
+   *             waking up a single writer to give it priority and prevent starvation.
+   *         <li>If no writers are waiting, it calls {@code signalAll()} on the {@code
+   *             readerCondition}, waking up all waiting readers to allow for maximum concurrency.
+   *       </ul>
+   * </ol>
+   *
+   * This strategy avoids the "thundering herd" problem while correctly enabling shared access for
+   * readers when appropriate.
+   *
+   * @param resourceId The unique ID of the resource to lock.
+   * @param leaseId The lease ID of the client session.
+   * @param coordination The coordination store used to execute commands and listen for events.
+   */
+  public DefaultReadWriteLock(String resourceId, String leaseId, CoordinationStore coordination) {
+    this.resourceId = resourceId;
+    this.leaseId = leaseId;
+    this.coordination = coordination;
+
+    this.readLock = new ReadLockImpl(this);
+    this.writeLock = new WriteLockImpl(this);
+
+    this.subscription =
+        coordination.subscribe(
+            "", // TODO: This should be a defined constant for ReadWriteLock
+            resourceId,
+            event -> {
+              if (event.getType() == ResourceChangeEvent.EventType.UPDATED
+                  || event.getType() == ResourceChangeEvent.EventType.DELETED) {
+
+                boolean isNowFullyFree =
+                    event
+                        .getNewNode()
+                        .map(
+                            node -> {
+                              Map<String, Object> data = node.getData();
+                              boolean writeLockExists = data.get("write_lock") != null;
+                              Object readLocksObj = data.get("read_locks");
+                              boolean readLocksExist =
+                                  readLocksObj instanceof List
+                                      && !((List<?>) readLocksObj).isEmpty();
+                              return !writeLockExists && !readLocksExist;
+                            })
+                        .orElse(true);
+
+                if (isNowFullyFree) {
+                  localLock.lock();
+                  try {
+                    if (localLock.hasWaiters(writerCondition)) {
+                      writerCondition.signal();
+                    } else {
+                      readerCondition.signalAll();
+                    }
+                  } finally {
+                    localLock.unlock();
+                  }
+                } else {
+                  boolean wasWriteLocked =
+                      event
+                          .getOldNode()
+                          .map(n -> n.getData().get("write_lock") != null)
+                          .orElse(false);
+                  boolean isWriteLocked =
+                      event
+                          .getNewNode()
+                          .map(n -> n.getData().get("write_lock") != null)
+                          .orElse(false);
+                  if (wasWriteLocked && !isWriteLocked) {
+                    localLock.lock();
+                    try {
+                      readerCondition.signalAll();
+                    } finally {
+                      localLock.unlock();
+                    }
+                  }
+                }
+              }
+            });
+  }
+
+  @Override
+  public ReadLock readLock() {
+    return readLock;
+  }
+
+  @Override
+  public WriteLock writeLock() {
+    return writeLock;
+  }
+
+  @Override
+  public void close() {
+    if (this.subscription != null) {
+      this.subscription.close();
+    }
+  }
+
+  // --- Abstract Base Class for Lock Implementations ---
+
+  private abstract static class AbstractLock implements atoma.api.lock.Lock, Closeable {
+    protected final DefaultReadWriteLock parent;
+    private final ThreadLocal<Integer> reentrancyCounter = ThreadLocal.withInitial(() -> 0);
+
+    protected AbstractLock(DefaultReadWriteLock parent) {
+      this.parent = parent;
+    }
+
+    protected abstract Command<LockCommand.AcquireResult> getAcquireCommand(String holderId);
+
+    protected abstract Command<LockCommand.ReleaseResult> getReleaseCommand(String holderId);
+
+    protected abstract Condition getCondition();
+
+    @Override
+    public String getLeaseId() {
+      return parent.leaseId;
+    }
+
+    @Override
+    public String getResourceId() {
+      return parent.resourceId;
+    }
+
+    @Override
+    public void lock() {
+      boolean interrupted = false;
+      try {
+        for (; ; ) {
+          try {
+            acquire(-1, null);
+            break;
+          } catch (InterruptedException e) {
+            interrupted = true;
+          } catch (TimeoutException e) {
+            throw new AssertionError("Timeout in non-timed method", e);
+          }
+        }
+      } finally {
+        if (interrupted) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    }
+
+    @Override
+    public void lock(long time, TimeUnit unit) throws InterruptedException, TimeoutException {
+      Objects.requireNonNull(unit);
+      acquire(time, unit);
+    }
+
+    @Override
+    public void lockInterruptibly() throws InterruptedException {
+      try {
+        acquire(-1, null);
+      } catch (TimeoutException e) {
+        throw new AssertionError("Timeout in non-timed method", e);
+      }
+    }
+
+    @Override
+    public void unlock() {
+      Integer count = reentrancyCounter.get();
+      if (count <= 0) {
+        throw new IllegalMonitorStateException(
+            "Current thread does not hold the lock: " + parent.resourceId);
+      }
+      count--;
+      if (count == 0) {
+        reentrancyCounter.remove();
+        String holderId = ThreadUtils.getCurrentThreadId();
+        var releaseCommand = getReleaseCommand(holderId);
+        parent.coordination.execute(parent.resourceId, releaseCommand);
+      } else {
+        reentrancyCounter.set(count);
+      }
+    }
+
+    @Override
+    public void close() {
+      unlock();
+    }
+
+    /**
+     * Private helper method containing the core logic for acquiring the distributed lock. This
+     * method orchestrates re-entrancy checks, optimistic acquisition attempts, and the coordinated
+     * local waiting mechanism.
+     *
+     * <p>The acquisition strategy is as follows:
+     *
+     * <ol>
+     *   <li><b>Reentrancy Check:</b> First, it checks a ThreadLocal counter. If the current thread
+     *       already holds this specific lock (read or write), the counter is incremented and the
+     *       method returns immediately.
+     *   <li><b>Optimistic Attempt:</b> The method enters an infinite loop and begins with an
+     *       optimistic, non-blocking network call to acquire the lock. This ensures fast
+     *       acquisition in the common, uncontended case. If successful, the lock is granted.
+     *   <li><b>Exception Translation:</b> It wraps the network call in a try-catch block to
+     *       translate any storage-layer {@link atoma.api.OperationTimeoutException} into the
+     *       standard, checked {@link java.util.concurrent.TimeoutException} required by the Lock
+     *       API contract.
+     *   <li><b>Coordinated Wait:</b> If the optimistic attempt fails, the thread prepares to wait.
+     *       It acquires a local, fair ReentrantLock (shared between read and write locks) and waits
+     *       on the specific {@link Condition} object provided by the concrete implementation
+     *       ({@code getCondition()}). The loop structure ensures that upon waking up, the thread
+     *       will loop back to the optimistic attempt.
+     * </ol>
+     *
+     * @param time the maximum time to wait for the lock
+     * @param unit the time unit of the {@code time} argument. If null, wait indefinitely.
+     * @throws InterruptedException if the current thread is interrupted
+     * @throws TimeoutException if the lock could not be acquired within the specified time
+     */
+    private void acquire(long time, TimeUnit unit) throws InterruptedException, TimeoutException {
+      if (reentrancyCounter.get() > 0) {
+        reentrancyCounter.set(reentrancyCounter.get() + 1);
+        return;
+      }
+      final boolean timed = (unit != null);
+      long remainingNanos = timed ? unit.toNanos(time) : 0;
+      String holderId = ThreadUtils.getCurrentThreadId();
+      var acquireCommand = getAcquireCommand(holderId);
+      final Condition condition = getCondition();
+
+      for (; ; ) {
+        try {
+          LockCommand.AcquireResult result =
+              parent.coordination.execute(parent.resourceId, acquireCommand);
+          if (result.acquired()) {
+            reentrancyCounter.set(result.reentrantCount());
+            return;
+          }
+        } catch (AtomaException e) {
+          Throwable cause = e;
+          while (cause != null) {
+            if (cause instanceof OperationTimeoutException) {
+              throw new TimeoutException("Lock command timed out during server-side execution.");
+            }
+            cause = cause.getCause();
+          }
+          throw new RuntimeException("Failed to execute lock command", e);
+        }
+
+        if (timed && remainingNanos <= 0) {
+          throw new TimeoutException("Unable to acquire lock within the specified time.");
+        }
+
+        parent.localLock.lock();
+        try {
+          // No need for a local state flag; we just wait for a signal and then re-try.
+          if (timed) {
+            if (remainingNanos <= 0) throw new TimeoutException("Wait time elapsed.");
+            long start = System.nanoTime();
+            if (!condition.await(remainingNanos, TimeUnit.NANOSECONDS)) {
+              throw new TimeoutException("Wait time elapsed before signal.");
+            }
+            remainingNanos -= (System.nanoTime() - start);
+          } else {
+            condition.await();
+          }
+        } finally {
+          parent.localLock.unlock();
+        }
+      }
+    }
+  }
+
+  // --- Concrete Lock Implementations ---
+
+  private static class ReadLockImpl extends AbstractLock implements ReadLock {
+    private ReadLockImpl(DefaultReadWriteLock parent) {
+      super(parent);
+    }
+
+    @Override
+    protected Command<LockCommand.AcquireResult> getAcquireCommand(String holderId) {
+      return new ReadWriteLockCommand.AcquireRead(
+          holderId, parent.leaseId, -1, TimeUnit.MILLISECONDS);
+    }
+
+    @Override
+    protected Command<LockCommand.ReleaseResult> getReleaseCommand(String holderId) {
+      return new ReadWriteLockCommand.ReleaseRead(holderId, parent.leaseId);
+    }
+
+    @Override
+    protected Condition getCondition() {
+      return parent.readerCondition;
+    }
+  }
+
+  private static class WriteLockImpl extends AbstractLock implements WriteLock {
+    private WriteLockImpl(DefaultReadWriteLock parent) {
+      super(parent);
+    }
+
+    @Override
+    protected Command<LockCommand.AcquireResult> getAcquireCommand(String holderId) {
+      return new ReadWriteLockCommand.AcquireWrite(
+          holderId, parent.leaseId, -1, TimeUnit.MILLISECONDS);
+    }
+
+    @Override
+    protected Command<LockCommand.ReleaseResult> getReleaseCommand(String holderId) {
+      return new ReadWriteLockCommand.ReleaseWrite(holderId);
+    }
+
+    @Override
+    protected Condition getCondition() {
+      return parent.writerCondition;
+    }
+  }
+}
