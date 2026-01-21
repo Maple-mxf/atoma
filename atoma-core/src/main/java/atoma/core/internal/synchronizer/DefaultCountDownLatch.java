@@ -33,7 +33,7 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * @see atoma.api.synchronizer.CountDownLatch
  */
-public class DefaultCountDownLatch implements CountDownLatch, AutoCloseable {
+public class DefaultCountDownLatch extends CountDownLatch {
 
   private final String resourceId;
   private final CoordinationStore coordination;
@@ -63,7 +63,7 @@ public class DefaultCountDownLatch implements CountDownLatch, AutoCloseable {
 
     this.subscription =
         coordination.subscribe(
-            "", // TODO: This should be a defined constant for CountDownLatch
+            CountDownLatch.class,
             resourceId,
             event -> {
               boolean shouldSignal = false;
@@ -164,8 +164,10 @@ public class DefaultCountDownLatch implements CountDownLatch, AutoCloseable {
   /** Closes this latch client and releases the underlying subscription resource. */
   @Override
   public void close() {
-    if (this.subscription != null) {
-      this.subscription.close();
+    if (closed.compareAndSet(false, true)) {
+      if (this.subscription != null) {
+        this.subscription.close();
+      }
     }
   }
 }

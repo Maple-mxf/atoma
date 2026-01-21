@@ -9,7 +9,6 @@ import atoma.api.coordination.command.LockCommand;
 import atoma.api.lock.Lock;
 import atoma.core.internal.ThreadUtils;
 
-import java.io.Closeable;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -17,15 +16,19 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Note: This implementation assumes the parent `Lock` interface can be modified to extend
- * `AutoCloseable` or `Closeable` for proper resource management.
+ * This implementation assumes the parent `Lock` interface can be modified to extend `AutoCloseable`
+ * or `Closeable` for proper resource management.
+ *
+ * <p>Note: Mutex lock and thread are related. In other words, The mutex-lock acquired by 'A'
+ * thread. Only thread A can invoked {@link DefaultMutexLock#unlock()} method successful.
  */
-public class DefaultMutexLock implements Lock, Closeable {
+public class DefaultMutexLock extends Lock {
   private final String resourceId;
   private final String leaseId;
   private final CoordinationStore coordination;
   private final Subscription subscription;
 
+  // A reentrant count-times for the thread.
   private final ThreadLocal<Integer> reentrancyCounter = ThreadLocal.withInitial(() -> 0);
 
   // A fair lock to coordinate local threads waiting for the distributed lock.
@@ -36,13 +39,22 @@ public class DefaultMutexLock implements Lock, Closeable {
   // It is protected by the localLock.
   private boolean isRemoteLockHeld = false;
 
+  // The logical-lock-version represent lock-data's latest version.
+  private volatile long clientLogicalLockVersion = 0L;
+
+  /**
+   * @param resourceId Mutex-lock resource-id
+   * @param leaseId The lease associated with current thread.
+   * @param coordination The instance for storing and coordinating state data
+   */
   public DefaultMutexLock(String resourceId, String leaseId, CoordinationStore coordination) {
     this.resourceId = resourceId;
     this.leaseId = leaseId;
     this.coordination = coordination;
     this.subscription =
         coordination.subscribe(
-            "", // API design issue: this parameter is unclear
+            // API design issue: this parameter is unclear
+            Lock.class,
             resourceId,
             event -> {
               if (Objects.requireNonNull(event.getType())
@@ -51,11 +63,23 @@ public class DefaultMutexLock implements Lock, Closeable {
                 try {
                   // The remote lock is now free. Update our local state view.
                   isRemoteLockHeld = false;
+
+                  // Reset the latest value because of delete operation.
+                  advancingLatestVersion(0L);
+
                   // Wake up one waiting thread to re-compete for the lock.
                   remoteLockAvailable.signal();
                 } finally {
                   localLock.unlock();
                 }
+              } else {
+                event
+                    .getNewNode()
+                    .ifPresent(
+                        n -> {
+                          long version = n.getVersion();
+                          advancingLatestVersion(version);
+                        });
               }
             });
   }
@@ -72,7 +96,8 @@ public class DefaultMutexLock implements Lock, Closeable {
 
   @Override
   public void lock() {
-    // This method implements non-interruptible lock acquisition, matching java.util.concurrent.locks.Lock.
+    // This method implements non-interruptible lock acquisition, matching
+    // java.util.concurrent.locks.Lock.
     boolean interrupted = false;
     try {
       for (; ; ) {
@@ -108,9 +133,20 @@ public class DefaultMutexLock implements Lock, Closeable {
   }
 
   /**
+   * Advancing the latest version
+   *
+   * @param latestVersion The latest version returned by storage.
+   */
+  private void advancingLatestVersion(long latestVersion) {
+    if (latestVersion > this.clientLogicalLockVersion || latestVersion == 0L)
+      clientLogicalLockVersion = latestVersion;
+  }
+
+  /**
    * Private helper method containing the core logic for acquiring the distributed lock.
    *
    * <p>The acquisition strategy is as follows:
+   *
    * <ol>
    *   <li><b>Reentrancy Check:</b> First, it checks a ThreadLocal counter. If the current thread
    *       already holds the lock, the counter is incremented and the method returns immediately.
@@ -123,9 +159,10 @@ public class DefaultMutexLock implements Lock, Closeable {
    *   <li><b>Wake-up and Contention Management:</b> When the distributed lock is released, a
    *       listener calls {@code signal()} on the Condition. By using {@code signal()} instead of
    *       {@code signalAll()}, only one waiting thread (the one that has waited the longest, due to
-   *       the fair lock) is woken up. This single thread then loops back to make another acquisition
-   *       attempt. This approach elegantly avoids the "thundering herd" problem, preventing multiple
-   *       threads from competing unnecessarily for the lock after a single release event.
+   *       the fair lock) is woken up. This single thread then loops back to make another
+   *       acquisition attempt. This approach elegantly avoids the "thundering herd" problem,
+   *       preventing multiple threads from competing unnecessarily for the lock after a single
+   *       release event.
    * </ol>
    *
    * @param time the maximum time to wait for the lock
@@ -145,12 +182,22 @@ public class DefaultMutexLock implements Lock, Closeable {
     String holderId = ThreadUtils.getCurrentThreadId();
     var acquireCommand = new LockCommand.Acquire(holderId, leaseId, -1, TimeUnit.MILLISECONDS);
 
+    LockCommand.AcquireResult result;
+    Retry:
     for (; ; ) {
       try {
-        LockCommand.AcquireResult result = coordination.execute(resourceId, acquireCommand);
+        result = coordination.execute(resourceId, acquireCommand);
+
+        // Acquisition success.
         if (result.acquired()) {
-          reentrancyCounter.set(result.reentrantCount());
+          reentrancyCounter.set(1);
           return;
+        }
+
+        // Acquisition failed because an unexpected error.
+        // Which will be retrying if latest-version is negatived.
+        if (result.serverLatestVersion() < 0 || clientLogicalLockVersion == 0L) {
+          continue Retry;
         }
       } catch (AtomaException e) {
         // Check if the exception or its cause is a server-side operation timeout.
@@ -158,7 +205,8 @@ public class DefaultMutexLock implements Lock, Closeable {
         while (cause != null) {
           if (cause instanceof OperationTimeoutException) {
             // Translate the low-level exception to the one declared in our public API contract.
-            throw new TimeoutException("Lock acquisition command timed out during server-side execution.");
+            throw new TimeoutException(
+                "Lock acquisition command timed out during server-side execution.");
           }
           cause = cause.getCause();
         }
@@ -184,7 +232,9 @@ public class DefaultMutexLock implements Lock, Closeable {
             }
             remainingNanos -= (System.nanoTime() - start);
           } else {
-            remoteLockAvailable.await();
+            if (result.serverLatestVersion() >= this.clientLogicalLockVersion)
+              remoteLockAvailable.await();
+            else continue Retry;
           }
         }
       } finally {
@@ -203,25 +253,23 @@ public class DefaultMutexLock implements Lock, Closeable {
 
     count--;
 
-    if (count == 0) {
-      reentrancyCounter.remove();
-      String holderId = ThreadUtils.getCurrentThreadId();
-      var releaseCommand = new LockCommand.Release(holderId);
-      LockCommand.ReleaseResult result = coordination.execute(resourceId, releaseCommand);
-      if (result.stillHeld()) {
-        // This indicates a state mismatch between client and server, which is a critical error.
-        throw new IllegalStateException(
-            "Lock was released, but the coordination server reports it is still held.");
-      }
-    } else {
+    if (count > 0) {
       reentrancyCounter.set(count);
+      return;
     }
+
+    reentrancyCounter.remove();
+    String holderId = ThreadUtils.getCurrentThreadId();
+    var releaseCommand = new LockCommand.Release(holderId);
+    coordination.execute(resourceId, releaseCommand);
   }
 
   @Override
   public void close() {
-    if (this.subscription != null) {
-      this.subscription.close();
+    if (closed.compareAndSet(false, true)) {
+      if (this.subscription != null) {
+        this.subscription.close();
+      }
     }
   }
 }

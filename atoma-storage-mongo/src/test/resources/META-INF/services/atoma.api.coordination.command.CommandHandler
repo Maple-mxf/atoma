@@ -1,0 +1,2 @@
+# This file enables ServiceLoader discovery for our test command handler.
+atoma.storage.mongo.MongoCoordinationStoreTest$MongoTestCommandHandler

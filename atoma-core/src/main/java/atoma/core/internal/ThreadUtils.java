@@ -7,6 +7,6 @@ public class ThreadUtils {
   }
 
   public static String getCurrentHolderId(String leaseId) {
-    return String.format("%s___%s", leaseId, getCurrentThreadId());
+    return String.format("%s-%s", leaseId, getCurrentThreadId());
   }
 }

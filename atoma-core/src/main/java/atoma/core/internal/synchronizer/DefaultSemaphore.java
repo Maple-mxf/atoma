@@ -78,7 +78,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * @see atoma.api.synchronizer.Semaphore
  * @see atoma.api.coordination.CoordinationStore
  */
-public class DefaultSemaphore implements Semaphore, AutoCloseable {
+public class DefaultSemaphore extends Semaphore {
 
   private final String resourceId;
   private final String leaseId;
@@ -98,7 +98,7 @@ public class DefaultSemaphore implements Semaphore, AutoCloseable {
 
     this.subscription =
         coordination.subscribe(
-            "", // TODO: This should be a defined constant for Semaphore
+            Semaphore.class, // TODO: This should be a defined constant for Semaphore
             resourceId,
             event -> {
               boolean shouldSignal = false;
@@ -222,8 +222,10 @@ public class DefaultSemaphore implements Semaphore, AutoCloseable {
    */
   @Override
   public void close() {
-    if (this.subscription != null) {
-      this.subscription.close();
+    if (closed.compareAndSet(false, true)) {
+      if (this.subscription != null) {
+        this.subscription.close();
+      }
     }
   }
 

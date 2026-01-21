@@ -24,6 +24,8 @@ public enum MongoErrorCode {
   TOO_MANY_FILES_OPEN(264, "TooManyFilesOpen"),
   TRANSACTION_EXCEEDED_LIFETIME_LIMIT_SECONDS(290, "TransactionExceededLifetimeLimitSeconds"),
   DUPLICATE_KEY(11000, "DuplicateKey"),
+
+
   ;
 
   private final int code;

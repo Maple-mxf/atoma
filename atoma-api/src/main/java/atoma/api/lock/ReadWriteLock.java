@@ -1,18 +1,20 @@
 package atoma.api.lock;
 
-public interface ReadWriteLock extends AutoCloseable {
+import atoma.api.Leasable;
+
+public abstract class ReadWriteLock extends Leasable {
 
   /**
    * 返回用于读操作的锁。
    *
    * @return 读锁实例。
    */
-  ReadLock readLock();
+  public abstract Lock readLock();
 
   /**
    * 返回用于写操作的锁。
    *
    * @return 写锁实例。
    */
-  WriteLock writeLock();
+  public abstract Lock writeLock();
 }

@@ -1,5 +1,5 @@
 package atoma.api;
 
-public interface Leasable extends Resourceful {
-  String getLeaseId();
+public abstract class Leasable extends Resourceful {
+  public abstract String getLeaseId();
 }

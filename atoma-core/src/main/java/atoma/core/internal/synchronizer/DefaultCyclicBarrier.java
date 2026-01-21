@@ -5,7 +5,7 @@ import atoma.api.coordination.CoordinationStore;
 import atoma.api.coordination.ResourceChangeEvent;
 import atoma.api.coordination.Subscription;
 import atoma.api.coordination.command.CyclicBarrierCommand;
-import atoma.api.synchronizer.BrokenBarrierException;
+import atoma.api.BrokenBarrierException;
 import atoma.api.synchronizer.CyclicBarrier;
 import atoma.core.internal.ThreadUtils;
 
@@ -19,26 +19,26 @@ import java.util.concurrent.locks.ReentrantLock;
 /**
  * The default client-side implementation of a distributed {@link CyclicBarrier}.
  *
- * <p>This class provides a distributed synchronization aid that allows a set of processes and threads to
- * all wait for each other to reach a common barrier point. The barrier is "cyclic" because it can be
- * reused after the waiting threads are released.
+ * <p>This class provides a distributed synchronization aid that allows a set of processes and
+ * threads to all wait for each other to reach a common barrier point. The barrier is "cyclic"
+ * because it can be reused after the waiting threads are released.
  *
  * <h3>Implementation Overview</h3>
  *
- * <p>This implementation coordinates state via a backend {@link CoordinationStore}. The core logic of
- * the {@link #await()} method is divided into two distinct phases to ensure correctness under high
- * concurrency.
+ * <p>This implementation coordinates state via a backend {@link CoordinationStore}. The core logic
+ * of the {@link #await()} method is divided into two distinct phases to ensure correctness under
+ * high concurrency.
  *
  * <ol>
  *   <li><b>Command Phase:</b> When a thread calls {@code await()}, the client first enters a
- *       spin-loop, repeatedly sending an {@code Await} command to the coordination store. The backend
- *       command handler uses optimistic locking to atomically register the participant. The client
- *       continues sending the command until the backend confirms successful registration for the
- *       current barrier generation. This phase robustly handles the race conditions of many clients
- *       trying to arrive at the barrier simultaneously.
- *   <li><b>Local Waiting Phase:</b> Once participation is confirmed by the backend, the thread waits
- *       locally on a {@link java.util.concurrent.locks.Condition}. It remains in this waiting state
- *       until notified of a change in the barrier's generation.
+ *       spin-loop, repeatedly sending an {@code Await} command to the coordination store. The
+ *       backend command handler uses optimistic locking to atomically register the participant. The
+ *       client continues sending the command until the backend confirms successful registration for
+ *       the current barrier generation. This phase robustly handles the race conditions of many
+ *       clients trying to arrive at the barrier simultaneously.
+ *   <li><b>Local Waiting Phase:</b> Once participation is confirmed by the backend, the thread
+ *       waits locally on a {@link java.util.concurrent.locks.Condition}. It remains in this waiting
+ *       state until notified of a change in the barrier's generation.
  * </ol>
  *
  * <h4>State Tracking and Wake-up Mechanism</h4>
@@ -52,14 +52,14 @@ import java.util.concurrent.locks.ReentrantLock;
  * <p>If a thread's wait times out, it assumes responsibility for breaking the barrier for all other
  * participants by issuing a {@link #reset()} command.
  *
- * <p><b>Resource Management:</b> This class implements {@link AutoCloseable}. It is crucial to close
- * the barrier instance (e.g., using a try-with-resources block) to release the underlying network
- * subscription and prevent resource leaks.
+ * <p><b>Resource Management:</b> This class implements {@link AutoCloseable}. It is crucial to
+ * close the barrier instance (e.g., using a try-with-resources block) to release the underlying
+ * network subscription and prevent resource leaks.
  *
  * @see atoma.api.synchronizer.CyclicBarrier
  * @see atoma.api.coordination.CoordinationStore
  */
-public class DefaultCyclicBarrier implements CyclicBarrier, AutoCloseable {
+public class DefaultCyclicBarrier extends CyclicBarrier {
 
   private final String resourceId;
   private final String leaseId;
@@ -74,10 +74,10 @@ public class DefaultCyclicBarrier implements CyclicBarrier, AutoCloseable {
   /**
    * Constructs a new DefaultCyclicBarrier.
    *
-   * <p>Upon construction, this client immediately communicates with the {@link CoordinationStore} to
-   * create the barrier resource if it doesn't exist, validate the number of parties if it does, and
-   * fetch the initial generation number. It also establishes a long-lived subscription to listen for
-   * changes to the barrier's state.
+   * <p>Upon construction, this client immediately communicates with the {@link CoordinationStore}
+   * to create the barrier resource if it doesn't exist, validate the number of parties if it does,
+   * and fetch the initial generation number. It also establishes a long-lived subscription to
+   * listen for changes to the barrier's state.
    *
    * <p>The subscription listener monitors changes to the remote {@code generation} field. When it
    * detects that the generation has advanced (meaning the barrier was tripped or reset), it signals
@@ -88,10 +88,11 @@ public class DefaultCyclicBarrier implements CyclicBarrier, AutoCloseable {
    * @param parties The number of parties that must invoke {@link #await()} before the barrier is
    *     tripped.
    * @param coordination The coordination store used for state management and eventing.
-   * @throws IllegalArgumentException if a barrier with the same {@code resourceId} already exists but
-   *     was initialized with a different number of parties.
+   * @throws IllegalArgumentException if a barrier with the same {@code resourceId} already exists
+   *     but was initialized with a different number of parties.
    */
-  public DefaultCyclicBarrier(String resourceId, String leaseId, int parties, CoordinationStore coordination) {
+  public DefaultCyclicBarrier(
+      String resourceId, String leaseId, int parties, CoordinationStore coordination) {
     if (parties <= 0) {
       throw new IllegalArgumentException("Parties must be a positive number.");
     }
@@ -101,39 +102,49 @@ public class DefaultCyclicBarrier implements CyclicBarrier, AutoCloseable {
     this.coordination = coordination;
 
     // Get or create the initial state and validate parties.
-    var initializeCommand = new CyclicBarrierCommand.Await(parties, ThreadUtils.getCurrentHolderId(leaseId), leaseId);
-    CyclicBarrierCommand.AwaitResult initResult = coordination.execute(resourceId, initializeCommand);
+    var initializeCommand =
+        new CyclicBarrierCommand.Await(parties, ThreadUtils.getCurrentHolderId(leaseId), leaseId);
+    CyclicBarrierCommand.AwaitResult initResult =
+        coordination.execute(resourceId, initializeCommand);
     if (initResult.broken()) {
-        throw new IllegalStateException("Barrier was created in a broken state.");
+      throw new IllegalStateException("Barrier was created in a broken state.");
     }
 
-    CyclicBarrierCommand.GetStateResult initialState = coordination.execute(resourceId, new CyclicBarrierCommand.GetState());
+    CyclicBarrierCommand.GetStateResult initialState =
+        coordination.execute(resourceId, new CyclicBarrierCommand.GetState());
     if (initialState.parties() > 0 && initialState.parties() != parties) {
       throw new IllegalArgumentException(
           "A barrier with the same ID already exists but with a different number of parties. "
-              + "Expected: " + parties + ", Found: " + initialState.parties());
+              + "Expected: "
+              + parties
+              + ", Found: "
+              + initialState.parties());
     }
     this.remoteGeneration.set(initialState.generation());
 
-    this.subscription = coordination.subscribe(
-        "",
-        resourceId,
-        event -> {
-          if (event.getType() == ResourceChangeEvent.EventType.UPDATED) {
-            event.getNewNode().ifPresent(newNode -> {
-              Long newGen = newNode.get("generation");
-              if (newGen != null && newGen > remoteGeneration.get()) {
-                remoteGeneration.set(newGen);
-                localLock.lock();
-                try {
-                  generationChanged.signalAll();
-                } finally {
-                  localLock.unlock();
-                }
+    this.subscription =
+        coordination.subscribe(
+            CyclicBarrier.class,
+            resourceId,
+            event -> {
+              if (event.getType() == ResourceChangeEvent.EventType.UPDATED) {
+                event
+                    .getNewNode()
+                    .ifPresent(
+                        newNode -> {
+                          Long newGen = newNode.get("generation");
+                          if (newGen != null && newGen > remoteGeneration.get()) {
+                            remoteGeneration.set(newGen);
+                            localLock.lock();
+                            try {
+                              generationChanged.signalAll();
+                            } finally {
+                              localLock.unlock();
+                            }
+                          }
+                        });
               }
             });
-          }
-        });
   }
 
   /**
@@ -141,6 +152,7 @@ public class DefaultCyclicBarrier implements CyclicBarrier, AutoCloseable {
    *
    * <p>If the current thread is not the last to arrive, it is disabled for thread scheduling
    * purposes and lies dormant until one of the following happens:
+   *
    * <ul>
    *   <li>The last party arrives;
    *   <li>Some other thread interrupts the current thread;
@@ -179,18 +191,20 @@ public class DefaultCyclicBarrier implements CyclicBarrier, AutoCloseable {
    * @throws TimeoutException if the specified timeout elapses. On timeout, the barrier is broken.
    */
   @Override
-  public void await(long timeout, TimeUnit unit) throws InterruptedException, BrokenBarrierException, TimeoutException {
+  public void await(long timeout, TimeUnit unit)
+      throws InterruptedException, BrokenBarrierException, TimeoutException {
     Objects.requireNonNull(unit);
     doAwait(timeout, unit);
   }
 
-  private void doAwait(Long waitTime, TimeUnit timeUnit) throws InterruptedException, BrokenBarrierException, TimeoutException {
+  private void doAwait(Long waitTime, TimeUnit timeUnit)
+      throws InterruptedException, BrokenBarrierException, TimeoutException {
     String participantId = ThreadUtils.getCurrentHolderId(leaseId);
     var awaitCommand = new CyclicBarrierCommand.Await(parties, participantId, leaseId);
 
     // Loop to handle optimistic locking failures. The command is retried if it fails due to a
     // concurrent modification, indicated by a non-passing, non-broken result.
-    for (;;) {
+    for (; ; ) {
       try {
         CyclicBarrierCommand.AwaitResult result = coordination.execute(resourceId, awaitCommand);
         if (result.broken()) {
@@ -201,11 +215,13 @@ public class DefaultCyclicBarrier implements CyclicBarrier, AutoCloseable {
           // Now, we must wait for the generation to change.
           break;
         }
-        // If not passed and not broken, it means a concurrent modification occurred (optimistic lock failure).
+        // If not passed and not broken, it means a concurrent modification occurred (optimistic
+        // lock failure).
         // The loop will immediately retry the command.
       } catch (AtomaException e) {
-          // For other errors, wrap and rethrow.
-          throw new RuntimeException("Failed to execute await command due to a coordination error", e);
+        // For other errors, wrap and rethrow.
+        throw new RuntimeException(
+            "Failed to execute await command due to a coordination error", e);
       }
     }
 
@@ -234,12 +250,13 @@ public class DefaultCyclicBarrier implements CyclicBarrier, AutoCloseable {
    * Resets the barrier to its initial state. If any parties are waiting at the barrier when this
    * method is called, they will return with a {@link BrokenBarrierException}.
    *
-   * <p>This operation uses optimistic locking to ensure it is applied to the expected barrier state,
-   * preventing race conditions with concurrent {@code await} or {@code reset} calls.
+   * <p>This operation uses optimistic locking to ensure it is applied to the expected barrier
+   * state, preventing race conditions with concurrent {@code await} or {@code reset} calls.
    */
   @Override
   public void reset() {
-    CyclicBarrierCommand.GetStateResult currentState = coordination.execute(resourceId, new CyclicBarrierCommand.GetState());
+    CyclicBarrierCommand.GetStateResult currentState =
+        coordination.execute(resourceId, new CyclicBarrierCommand.GetState());
     coordination.execute(resourceId, new CyclicBarrierCommand.Reset(currentState.version()));
   }
 
@@ -269,8 +286,10 @@ public class DefaultCyclicBarrier implements CyclicBarrier, AutoCloseable {
    */
   @Override
   public void close() {
-    if (this.subscription != null) {
-      this.subscription.close();
+    if (closed.compareAndSet(false, true)) {
+      if (this.subscription != null) {
+        this.subscription.close();
+      }
     }
   }
 }

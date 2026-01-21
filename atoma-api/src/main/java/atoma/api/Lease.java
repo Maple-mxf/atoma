@@ -1,40 +1,110 @@
 package atoma.api;
 
+import atoma.api.lock.Lock;
+import atoma.api.lock.ReadWriteLock;
+import atoma.api.synchronizer.Semaphore;
+
+import java.time.Duration;
+
 /**
- * 代表一个客户端与 Atoma 协调服务之间的会话租约。
+ * Represents a session lease between a client and the Atoma coordination service.
  *
- * <p>Lease 是所有分布式原语安全运行的基础。它通过自动续约机制来维持其有效性， 并在客户端故障时，保证其持有的资源（如锁）最终能够被系统自动回收，从而防止死锁。
+ * <p>A {@code Lease} is fundamental for the secure and reliable operation of all distributed primitives.
+ * It maintains its validity through an automatic renewal mechanism. In the event of a client failure,
+ * the lease mechanism ensures that any resources held by the client (such as locks) are eventually
+ * and automatically reclaimed by the system, thereby preventing deadlocks and resource leaks.
  *
- * <p>此接口实现了 {@link AutoCloseable}，强烈建议在 try-with-resources 语句块中使用， 以确保在客户端正常退出时，租约能被干净地撤销。
+ * <p>This abstract class implements {@link AutoCloseable}, making it suitable for use in
+ * try-with-resources statements. This ensures that the lease is cleanly and automatically
+ * revoked when the client's scope exits, promoting proper resource management.
  */
-public interface Lease extends AutoCloseable {
+public abstract class Lease extends Resourceful {
 
   /**
-   * 获取此租约的全局唯一标识符。 这个 ID 将被用于标识资源的所有权。
+   * Retrieves or creates a distributed mutex lock instance associated with this lease.
+   * The lock is identified by a unique {@code resourceId}.
    *
-   * @return 租约的唯一 ID。
+   * @param resourceId The unique identifier for the lock resource.
+   * @return A distributed mutex {@link Lock} instance.
    */
-  String getId();
+  public abstract Lock getLock(String resourceId);
 
   /**
-   * 明确地、永久性地撤销此租约。
+   * Retrieves or creates a distributed read-write lock instance associated with this lease.
+   * The read-write lock is identified by a unique {@code resourceId}.
    *
-   * <p>调用此方法会立即通知协调服务此租约已终止，并触发所有与此租约相关的资源的清理工作。 这是一个幂等操作。
+   * @param resourceId The unique identifier for the read-write lock resource.
+   * @return A distributed {@link ReadWriteLock} instance.
    */
-  void revoke();
+  public abstract ReadWriteLock getReadWriteLock(String resourceId);
 
   /**
-   * 检查此租约是否已被客户端明确撤销
+   * Retrieves or creates a distributed semaphore instance associated with this lease.
+   * The semaphore is identified by a unique {@code resourceId} and initialized with
+   * a specified number of permits.
    *
-   * <p>注意：返回 {@code false} 并不保证租约在服务端仍然有效，因为它可能因为网络分区等原因而过期。 此方法只反映客户端是否主动调用了 {@link #revoke()}。
-   *
-   * @return 如果 {@link #revoke()} 已被调用，则返回 true。
+   * @param resourceId The unique identifier for the semaphore resource.
+   * @param initialPermits The initial number of permits available for the semaphore.
+   * @return A distributed {@link Semaphore} instance.
    */
-  boolean isRevoked();
+  public abstract Semaphore getSemaphore(String resourceId, int initialPermits);
 
-  /** 实现 AutoCloseable 接口，其行为等同于调用 {@link #revoke()}。 */
+  /**
+   * Retrieves the globally unique identifier for this lease.
+   * This ID is used by the coordination service to identify the ownership of distributed resources.
+   *
+   * @return The unique ID of this lease.
+   */
+  public abstract String getResourceId();
+
+  /**
+   * Explicitly and permanently revokes this lease.
+   *
+   * <p>Calling this method immediately notifies the coordination service that this lease
+   * has terminated. This action triggers the cleanup of all distributed resources
+   * (e.g., owned locks, acquired permits) associated with this lease.
+   * This operation is idempotent.
+   */
+  public abstract void revoke();
+
+  /**
+   * Executes time-to-live (TTL) operations for this lease.
+   * This method is typically called internally by the lease management mechanism
+   * to periodically update or refresh the lease's status with the coordination service.
+   */
+  public abstract void timeToLive();
+
+  /**
+   * Returns the configured time-to-live duration for this lease.
+   * This duration specifies how long the lease remains valid without renewal.
+   *
+   * @return The {@link Duration} of the lease's time-to-live.
+   */
+  public abstract Duration getTtlDuration();
+
+  /**
+   * Checks if this lease has been explicitly revoked by the client.
+   *
+   * <p>Note: A return value of {@code false} does not guarantee that the lease is still valid
+   * on the server side. The lease might have expired due to network partitions, server issues,
+   * or other reasons beyond the client's explicit control. This method primarily reflects
+   * whether the client has actively invoked {@link #revoke()}.
+   *
+   * @return {@code true} if {@link #revoke()} has been called for this lease; {@code false} otherwise.
+   */
+  public abstract boolean isRevoked();
+
+  /**
+   * Implements the {@link AutoCloseable} interface.
+   *
+   * <p>When this lease is used in a try-with-resources statement, this method is automatically
+   * invoked upon exiting the try block. Its behavior is equivalent to calling {@link #revoke()},
+   * ensuring that the lease is properly terminated and associated resources are released.
+   *
+   * @throws Exception if an error occurs during the revocation process.
+   */
   @Override
-  default void close() {
+  public void close() throws Exception {
     revoke();
   }
 }

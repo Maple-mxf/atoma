@@ -1,10 +1,21 @@
 package atoma.api;
 
-/** 基础接口：只关心资源本身 */
-public interface Resourceful {
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/** Resourceful of class. */
+public abstract class Resourceful implements AutoCloseable {
+
+  protected final AtomicBoolean closed = new AtomicBoolean(false);
 
   /**
-   * @return 返回资源的唯一ID
+   * @return The resource unique-id
    */
-  String getResourceId();
+  public abstract String getResourceId();
+
+  /**
+   * @return The current resource is closed.
+   */
+  public boolean isClosed() {
+    return closed.get();
+  }
 }

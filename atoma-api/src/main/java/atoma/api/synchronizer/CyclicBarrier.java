@@ -1,5 +1,6 @@
 package atoma.api.synchronizer;
 
+import atoma.api.BrokenBarrierException;
 import atoma.api.Resourceful;
 
 import java.util.concurrent.TimeUnit;
@@ -8,17 +9,18 @@ import java.util.concurrent.TimeoutException;
 /**
  * @see java.util.concurrent.CyclicBarrier
  */
-public interface CyclicBarrier extends Resourceful {
+public abstract class CyclicBarrier extends Resourceful {
 
-  void await(long timeout, TimeUnit unit) throws InterruptedException, BrokenBarrierException, TimeoutException;
+  public abstract void await(long timeout, TimeUnit unit)
+      throws InterruptedException, BrokenBarrierException, TimeoutException;
 
-  void await() throws InterruptedException, BrokenBarrierException;
+  public abstract void await() throws InterruptedException, BrokenBarrierException;
 
-  void reset();
+  public abstract void reset();
 
-  boolean isBroken();
+  public abstract boolean isBroken();
 
-  int getParties();
+  public abstract int getParties();
 
-  int getNumberWaiting();
+  public abstract int getNumberWaiting();
 }

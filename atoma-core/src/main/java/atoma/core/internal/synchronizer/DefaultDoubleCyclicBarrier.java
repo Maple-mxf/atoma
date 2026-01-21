@@ -11,7 +11,7 @@ import java.util.Map;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
-public class DefaultDoubleCyclicBarrier implements DoubleCyclicBarrier, AutoCloseable {
+public class DefaultDoubleCyclicBarrier extends DoubleCyclicBarrier {
 
   private final String resourceId;
   private final String leaseId;
@@ -23,40 +23,52 @@ public class DefaultDoubleCyclicBarrier implements DoubleCyclicBarrier, AutoClos
   private final Condition enterCondition = localLock.newCondition();
   private final Condition leaveCondition = localLock.newCondition();
 
-  public DefaultDoubleCyclicBarrier(String resourceId, String leaseId, int parties, CoordinationStore coordination) {
+  public DefaultDoubleCyclicBarrier(
+      String resourceId, String leaseId, int parties, CoordinationStore coordination) {
     this.resourceId = resourceId;
     this.leaseId = leaseId;
     this.parties = parties;
     this.coordination = coordination;
 
-    this.subscription = coordination.subscribe(
-        "", // TODO: Define constant
-        resourceId,
-        event -> {
-          if (event.getType() == ResourceChangeEvent.EventType.UPDATED) {
-            event.getOldNode().ifPresent(oldNode -> {
-              boolean enterWaitersExisted = oldNode.getData().get("enter_waiters") != null;
-              boolean leaveWaitersExisted = oldNode.getData().get("leave_waiters") != null;
+    this.subscription =
+        coordination.subscribe(
+            DoubleCyclicBarrier.class,
+            resourceId,
+            event -> {
+              if (event.getType() == ResourceChangeEvent.EventType.UPDATED) {
+                event
+                    .getOldNode()
+                    .ifPresent(
+                        oldNode -> {
+                          boolean enterWaitersExisted =
+                              oldNode.getData().get("enter_waiters") != null;
+                          boolean leaveWaitersExisted =
+                              oldNode.getData().get("leave_waiters") != null;
 
-              event.getNewNode().ifPresent(newNode -> {
-                boolean enterWaitersExists = newNode.getData().get("enter_waiters") != null;
-                boolean leaveWaitersExists = newNode.getData().get("leave_waiters") != null;
+                          event
+                              .getNewNode()
+                              .ifPresent(
+                                  newNode -> {
+                                    boolean enterWaitersExists =
+                                        newNode.getData().get("enter_waiters") != null;
+                                    boolean leaveWaitersExists =
+                                        newNode.getData().get("leave_waiters") != null;
 
-                localLock.lock();
-                try {
-                  if (enterWaitersExisted && !enterWaitersExists) {
-                    enterCondition.signalAll();
-                  }
-                  if (leaveWaitersExisted && !leaveWaitersExists) {
-                    leaveCondition.signalAll();
-                  }
-                } finally {
-                  localLock.unlock();
-                }
-              });
+                                    localLock.lock();
+                                    try {
+                                      if (enterWaitersExisted && !enterWaitersExists) {
+                                        enterCondition.signalAll();
+                                      }
+                                      if (leaveWaitersExisted && !leaveWaitersExists) {
+                                        leaveCondition.signalAll();
+                                      }
+                                    } finally {
+                                      localLock.unlock();
+                                    }
+                                  });
+                        });
+              }
             });
-          }
-        });
   }
 
   @Override
@@ -70,7 +82,7 @@ public class DefaultDoubleCyclicBarrier implements DoubleCyclicBarrier, AutoClos
     var command = new DoubleCyclicBarrierCommand.Enter(parties, participantId, leaseId);
 
     // Loop to handle optimistic locking failures
-    for (;;) {
+    for (; ; ) {
       if (coordination.execute(resourceId, command).passed()) {
         break;
       }
@@ -92,7 +104,7 @@ public class DefaultDoubleCyclicBarrier implements DoubleCyclicBarrier, AutoClos
     var command = new DoubleCyclicBarrierCommand.Leave(parties, participantId, leaseId);
 
     // Loop to handle optimistic locking failures
-    for (;;) {
+    for (; ; ) {
       if (coordination.execute(resourceId, command).passed()) {
         break;
       }
@@ -114,8 +126,10 @@ public class DefaultDoubleCyclicBarrier implements DoubleCyclicBarrier, AutoClos
 
   @Override
   public void close() {
-    if (this.subscription != null) {
-      this.subscription.close();
+    if (closed.compareAndSet(false, true)) {
+      if (this.subscription != null) {
+        this.subscription.close();
+      }
     }
   }
 }

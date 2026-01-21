@@ -9,4 +9,9 @@ public class AtomaException extends RuntimeException {
     public AtomaException(String message) {
         super(message);
     }
+
+    @Override
+    public void printStackTrace() {
+        super.printStackTrace();
+    }
 }

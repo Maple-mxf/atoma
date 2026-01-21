@@ -4,7 +4,7 @@ import java.util.Optional;
 
 public final class ResourceChangeEvent {
 
-  ResourceChangeEvent(EventType type, String resourceKey, Resource newNode, Resource oldNode) {
+  public ResourceChangeEvent(EventType type, String resourceKey, Resource newNode, Resource oldNode) {
     this.type = type;
     this.resourceKey = resourceKey;
     this.newNode = Optional.ofNullable(newNode);

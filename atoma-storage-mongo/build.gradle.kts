@@ -29,6 +29,9 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("junit:junit:4.13.2")
     testImplementation(lib.systemrule)
+    testImplementation("org.mockito:mockito-core:5.11.0")
+    testImplementation("org.mockito:mockito-junit-jupiter:5.11.0")
+    testImplementation(lib.flapdoodle.embed.mongo)
 }
 
 tasks.javadoc {
@@ -45,4 +48,10 @@ tasks.javadoc {
 tasks.withType<JavaCompile>().configureEach {
     options.errorprone.disableWarningsInGeneratedCode.set(true)
     options.errorprone.disableAllChecks=true
+}
+
+tasks.test {
+
+    useJUnitPlatform()
+
 }

@@ -8,12 +8,11 @@ import atoma.api.coordination.Subscription;
 import atoma.api.coordination.command.Command;
 import atoma.api.coordination.command.LockCommand;
 import atoma.api.coordination.command.ReadWriteLockCommand;
-import atoma.api.lock.ReadLock;
+import atoma.api.lock.Lock;
 import atoma.api.lock.ReadWriteLock;
-import atoma.api.lock.WriteLock;
 import atoma.core.internal.ThreadUtils;
 
-import java.io.Closeable;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
@@ -26,10 +25,9 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * <h3>Architectural Overview</h3>
  *
- * This class acts as a factory and container for the concrete {@link ReadLock} and {@link
- * WriteLock} implementations. It manages the state shared between both lock types, including the
- * connection to the {@link CoordinationStore} and the local concurrency primitives used for thread
- * coordination.
+ * This class acts as a factory and container for the concrete {@link Lock} implementations. It
+ * manages the state shared between both lock types, including the connection to the {@link
+ * CoordinationStore} and the local concurrency primitives used for thread coordination.
  *
  * <h4>Shared Local State &amp; Dual Conditions</h4>
  *
@@ -54,7 +52,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * @see atoma.core.internal.lock.DefaultReadWriteLock.AbstractLock
  * @see atoma.api.lock.ReadWriteLock
  */
-public class DefaultReadWriteLock implements ReadWriteLock, AutoCloseable {
+public class DefaultReadWriteLock extends ReadWriteLock {
 
   // --- Shared State for both Read and Write Locks ---
   private final String resourceId;
@@ -69,6 +67,19 @@ public class DefaultReadWriteLock implements ReadWriteLock, AutoCloseable {
 
   private final ReadLockImpl readLock;
   private final WriteLockImpl writeLock;
+
+  // The logical-lock-version represents lock-data's latest version.
+  private volatile long clientLogicalLockVersion = 0L;
+
+  /**
+   * Advancing the latest version
+   *
+   * @param latestVersion The latest version returned by storage.
+   */
+  private void advancingLatestVersion(long latestVersion) {
+    if (latestVersion > this.clientLogicalLockVersion || latestVersion == 0L)
+      clientLogicalLockVersion = latestVersion;
+  }
 
   /**
    * Constructs a new DefaultReadWriteLock for a given resource.
@@ -114,9 +125,15 @@ public class DefaultReadWriteLock implements ReadWriteLock, AutoCloseable {
 
     this.subscription =
         coordination.subscribe(
-            "", // TODO: This should be a defined constant for ReadWriteLock
+            ReadWriteLock.class,
             resourceId,
             event -> {
+              if (event.getType() == ResourceChangeEvent.EventType.DELETED)
+                advancingLatestVersion(0L);
+              else {
+                event.getNewNode().ifPresent(n -> advancingLatestVersion(n.getVersion()));
+              }
+
               if (event.getType() == ResourceChangeEvent.EventType.UPDATED
                   || event.getType() == ResourceChangeEvent.EventType.DELETED) {
 
@@ -171,25 +188,37 @@ public class DefaultReadWriteLock implements ReadWriteLock, AutoCloseable {
   }
 
   @Override
-  public ReadLock readLock() {
+  public Lock readLock() {
     return readLock;
   }
 
   @Override
-  public WriteLock writeLock() {
+  public Lock writeLock() {
     return writeLock;
   }
 
   @Override
   public void close() {
-    if (this.subscription != null) {
-      this.subscription.close();
+    if (closed.compareAndSet(false, true)) {
+      if (this.subscription != null) {
+        this.subscription.close();
+      }
     }
+  }
+
+  @Override
+  public String getLeaseId() {
+    return leaseId;
+  }
+
+  @Override
+  public String getResourceId() {
+    return resourceId;
   }
 
   // --- Abstract Base Class for Lock Implementations ---
 
-  private abstract static class AbstractLock implements atoma.api.lock.Lock, Closeable {
+  private abstract static class AbstractLock extends Lock {
     protected final DefaultReadWriteLock parent;
     private final ThreadLocal<Integer> reentrancyCounter = ThreadLocal.withInitial(() -> 0);
 
@@ -197,9 +226,9 @@ public class DefaultReadWriteLock implements ReadWriteLock, AutoCloseable {
       this.parent = parent;
     }
 
-    protected abstract Command<LockCommand.AcquireResult> getAcquireCommand(String holderId);
+    protected abstract Command<LockCommand.AcquireResult> buildAcquireCommand(String holderId);
 
-    protected abstract Command<LockCommand.ReleaseResult> getReleaseCommand(String holderId);
+    protected abstract Command<Void> buildReleaseCommand(String holderId);
 
     protected abstract Condition getCondition();
 
@@ -257,14 +286,25 @@ public class DefaultReadWriteLock implements ReadWriteLock, AutoCloseable {
             "Current thread does not hold the lock: " + parent.resourceId);
       }
       count--;
-      if (count == 0) {
-        reentrancyCounter.remove();
-        String holderId = ThreadUtils.getCurrentThreadId();
-        var releaseCommand = getReleaseCommand(holderId);
-        parent.coordination.execute(parent.resourceId, releaseCommand);
-      } else {
+
+      if (count > 0) {
         reentrancyCounter.set(count);
+        return;
       }
+
+      reentrancyCounter.remove();
+      String holderId = ThreadUtils.getCurrentThreadId();
+      var releaseCommand = buildReleaseCommand(holderId);
+      parent.coordination.execute(parent.resourceId, releaseCommand);
+
+      //      if (count == 0) {
+      //        reentrancyCounter.remove();
+      //        String holderId = ThreadUtils.getCurrentThreadId();
+      //        var releaseCommand = getReleaseCommand(holderId);
+      //        parent.coordination.execute(parent.resourceId, releaseCommand);
+      //      } else {
+      //        reentrancyCounter.set(count);
+      //      }
     }
 
     @Override
@@ -310,17 +350,25 @@ public class DefaultReadWriteLock implements ReadWriteLock, AutoCloseable {
       final boolean timed = (unit != null);
       long remainingNanos = timed ? unit.toNanos(time) : 0;
       String holderId = ThreadUtils.getCurrentThreadId();
-      var acquireCommand = getAcquireCommand(holderId);
+      var acquireCommand = buildAcquireCommand(holderId);
       final Condition condition = getCondition();
 
+      LockCommand.AcquireResult result;
+      Retry:
       for (; ; ) {
         try {
-          LockCommand.AcquireResult result =
-              parent.coordination.execute(parent.resourceId, acquireCommand);
+          result = parent.coordination.execute(parent.resourceId, acquireCommand);
           if (result.acquired()) {
-            reentrancyCounter.set(result.reentrantCount());
+            reentrancyCounter.set(1);
             return;
           }
+
+          // Acquisition failed because an unexpected error.
+          // Which will be retrying if latest-version is negatived.
+          if (result.serverLatestVersion() < 0 || parent.clientLogicalLockVersion == 0L) {
+            continue Retry;
+          }
+
         } catch (AtomaException e) {
           Throwable cause = e;
           while (cause != null) {
@@ -347,7 +395,8 @@ public class DefaultReadWriteLock implements ReadWriteLock, AutoCloseable {
             }
             remainingNanos -= (System.nanoTime() - start);
           } else {
-            condition.await();
+            if (result.serverLatestVersion() >= parent.clientLogicalLockVersion) condition.await();
+            else continue Retry;
           }
         } finally {
           parent.localLock.unlock();
@@ -358,19 +407,19 @@ public class DefaultReadWriteLock implements ReadWriteLock, AutoCloseable {
 
   // --- Concrete Lock Implementations ---
 
-  private static class ReadLockImpl extends AbstractLock implements ReadLock {
+  private static class ReadLockImpl extends AbstractLock {
     private ReadLockImpl(DefaultReadWriteLock parent) {
       super(parent);
     }
 
     @Override
-    protected Command<LockCommand.AcquireResult> getAcquireCommand(String holderId) {
+    protected Command<LockCommand.AcquireResult> buildAcquireCommand(String holderId) {
       return new ReadWriteLockCommand.AcquireRead(
           holderId, parent.leaseId, -1, TimeUnit.MILLISECONDS);
     }
 
     @Override
-    protected Command<LockCommand.ReleaseResult> getReleaseCommand(String holderId) {
+    protected Command<Void> buildReleaseCommand(String holderId) {
       return new ReadWriteLockCommand.ReleaseRead(holderId, parent.leaseId);
     }
 
@@ -378,27 +427,37 @@ public class DefaultReadWriteLock implements ReadWriteLock, AutoCloseable {
     protected Condition getCondition() {
       return parent.readerCondition;
     }
+
+    @Override
+    public boolean isClosed() {
+      return parent.isClosed();
+    }
   }
 
-  private static class WriteLockImpl extends AbstractLock implements WriteLock {
+  private static class WriteLockImpl extends AbstractLock {
     private WriteLockImpl(DefaultReadWriteLock parent) {
       super(parent);
     }
 
     @Override
-    protected Command<LockCommand.AcquireResult> getAcquireCommand(String holderId) {
+    protected Command<LockCommand.AcquireResult> buildAcquireCommand(String holderId) {
       return new ReadWriteLockCommand.AcquireWrite(
           holderId, parent.leaseId, -1, TimeUnit.MILLISECONDS);
     }
 
     @Override
-    protected Command<LockCommand.ReleaseResult> getReleaseCommand(String holderId) {
+    protected Command<Void> buildReleaseCommand(String holderId) {
       return new ReadWriteLockCommand.ReleaseWrite(holderId);
     }
 
     @Override
     protected Condition getCondition() {
       return parent.writerCondition;
+    }
+
+    @Override
+    public boolean isClosed() {
+      return parent.isClosed();
     }
   }
 }

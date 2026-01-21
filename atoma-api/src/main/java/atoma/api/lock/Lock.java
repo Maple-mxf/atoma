@@ -5,13 +5,13 @@ import atoma.api.Leasable;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-public interface Lock extends Leasable, AutoCloseable {
+public abstract class Lock extends Leasable {
 
-  void lock() throws InterruptedException;
+  public abstract void lock() throws InterruptedException;
 
-  void lock(long time, TimeUnit unit) throws InterruptedException, TimeoutException;
+  public abstract void lock(long time, TimeUnit unit) throws InterruptedException, TimeoutException;
 
-  void lockInterruptibly() throws InterruptedException;
+  public abstract void lockInterruptibly() throws InterruptedException;
 
-  void unlock();
+  public abstract void unlock();
 }

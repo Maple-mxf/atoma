@@ -1,14 +1,21 @@
 package atoma.api.coordination;
 
 /**
- * 一个回调接口，用于接收 Resource 的状态变更事件。 这是一个函数式接口，可以使用 lambda 表达式来实现。
+ * A functional callback interface for receiving state change events of a {@link Resource}.
  *
- * @see atoma.api.coordination.CoordinationStore#subscribe(String, String, ResourceListener)
+ * <p>Implementations of this interface are typically registered via
+ * {@link CoordinationStore#subscribe(String, String, ResourceListener)} to listen for
+ * updates, creations, or deletions of specific distributed resources.
+ * Being a functional interface, it can be implemented concisely using lambda expressions.
  */
+@FunctionalInterface
 public interface ResourceListener {
 
   /**
-   * @param event 触发事件后生成的数据对象
+   * Called when a state change event occurs for the subscribed resource.
+   *
+   * @param event The {@link ResourceChangeEvent} object containing detailed information
+   *              about the event, including the type of change and the new/old resource state.
    */
   void onEvent(ResourceChangeEvent event);
 }

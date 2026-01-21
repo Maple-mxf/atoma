@@ -28,16 +28,17 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>信号量内部会维护一个队列存储等待的线程信息存储阻塞等待的线程信息
  */
-public interface Semaphore extends Leasable {
+public abstract class Semaphore extends Leasable {
 
-  void acquire(int permits) throws InterruptedException;
+  public abstract void acquire(int permits) throws InterruptedException;
 
-  void acquire(int permits, Long waitTime, TimeUnit timeUnit) throws InterruptedException;
+  public abstract void acquire(int permits, Long waitTime, TimeUnit timeUnit)
+      throws InterruptedException;
 
-  void release(int permits);
+  public abstract void release(int permits);
 
   /**
    * @return 返回初始化的许可数量
    */
-  int getPermits();
+  public abstract int getPermits();
 }

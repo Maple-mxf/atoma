@@ -9,6 +9,8 @@ slf4j = "2.0.15"
 logback = "1.5.7"
 systemrule = "1.19.0"
 bytebuddy = "1.15.11"
+flapdoodle-embed-mongo = "4.16.1"
+testcontainers = "1.19.7"
 
 
 [libraries]
@@ -25,5 +27,7 @@ logback = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 systemrule = { module = "com.github.stefanbirkner:system-rules", version.ref = "systemrule" }
 bytebuddy = { module = "net.bytebuddy:byte-buddy", version.ref = "bytebuddy" }
 bytebuddyagent = { module = "net.bytebuddy:byte-buddy-agent", version.ref = "bytebuddy" }
+flapdoodle-embed-mongo = { module = "de.flapdoodle.embed:de.flapdoodle.embed.mongo", version.ref = "flapdoodle-embed-mongo" }
+testcontainers-mongodb = { module = "org.testcontainers:mongodb", version.ref = "testcontainers" }
 
 [bundles]

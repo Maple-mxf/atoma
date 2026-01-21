@@ -2,25 +2,47 @@ package atoma.api.synchronizer;
 
 import atoma.api.Resourceful;
 
-public interface CountDownLatch extends Resourceful {
-  /** 执行向下计数 减1操作 */
-  void countDown();
+/**
+ * A distributed synchronization aid that allows one or more threads to wait until
+ * a set of operations being performed in other threads have completed.
+ *
+ * <p>A {@code CountDownLatch} is initialized with a given count. The {@link #countDown()} method
+ * decrements the count. Threads invoking {@link #await()} are blocked until the count
+ * reaches zero. Once the count reaches zero, all waiting threads are released, and
+ * any subsequent invocations of {@link #await()} return immediately.
+ *
+ * <p>This distributed version ensures that the count and waiting mechanisms are
+ * coordinated across multiple processes or machines interacting with the Atoma
+ * coordination service.
+ */
+public abstract class CountDownLatch extends Resourceful {
+  /**
+   * Decrements the count of the latch.
+   * If the count reaches zero, all waiting threads are released.
+   */
+  public abstract void countDown();
 
   /**
-   * 挂起当前线程等待
+   * Causes the current thread to wait until the latch has counted down to zero,
+   * unless the thread is {@linkplain Thread#interrupt interrupted}.
    *
-   * @throws InterruptedException 主线程deadline，wait状态的线程会抛出此错误
+   * @throws InterruptedException if the current thread is interrupted while waiting.
    */
-  void await() throws InterruptedException;
+  public abstract void await() throws InterruptedException;
 
   /**
-   * @return 返回需要计数的基数
+   * Returns the current count.
+   *
+   * <p>This method is typically used for debugging and testing purposes.
+   *
+   * @return The current count.
    */
-  int getCount();
+  public abstract int getCount();
 
   /**
-   * Deletes the latch resource from the backend coordination service.
-   * This is useful for explicit resource cleanup.
+   * Deletes the latch resource from the backend coordination service. This is useful for explicit
+   * resource cleanup when the latch is no longer needed and its underlying storage
+   * should be removed.
    */
-  void destroy();
+  public abstract void destroy();
 }

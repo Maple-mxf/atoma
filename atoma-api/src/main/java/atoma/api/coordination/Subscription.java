@@ -1,35 +1,49 @@
 package atoma.api.coordination;
 
 /**
- * 代表对一个资源节点变更事件的订阅。
+ * Represents an active subscription to change events of a specific resource node
+ * within the distributed coordination service.
  *
- * <p>此对象的主要职责是管理订阅的生命周期，特别是提供取消订阅的能力。 它实现了 AutoCloseable 接口，以便可以方便地在 try-with-resources 语句块中使用。
+ * <p>The primary responsibility of a {@code Subscription} object is to manage
+ * the lifecycle of the subscription, particularly providing the ability to
+ * explicitly cancel it.
+ *
+ * <p>This interface extends {@link AutoCloseable}, making it suitable for use
+ * in try-with-resources statements. This ensures that the subscription is
+ * cleanly and automatically terminated when the managing scope exits.
  */
 public interface Subscription extends AutoCloseable {
   /**
-   * 取消此次订阅。
+   * Cancels this subscription.
    *
-   * <p>调用此方法后，将停止接收任何后续的节点变更通知，并释放底层相关的资源, (例如数据库的监听游标)。此操作是幂等的。
+   * <p>Once this method is called, the subscriber will stop receiving any
+   * further notifications of resource node changes, and any underlying
+   * resources (e.g., database change stream cursors) related to this
+   * subscription will be released. This operation is idempotent.
    */
   void unsubscribe();
 
   /**
-   * 检查订阅当前是否仍处于活动状态。
+   * Checks if this subscription is currently active and has not been cancelled.
    *
-   * @return 如果订阅有效且未被取消，则返回 true；否则返回 false。
+   * @return {@code true} if the subscription is valid and active; {@code false} otherwise.
    */
   boolean isSubscribed();
 
   /**
-   * 获取此订阅所关联的资源键。
+   * Retrieves the unique key of the resource that this subscription is associated with.
    *
-   * @return 资源的唯一标识键。
+   * @return The unique identifier key of the subscribed resource.
    */
   String getResourceKey();
 
   /**
-   * 实现 AutoCloseable 接口，其行为等同于调用 {@link #unsubscribe()}。 这使得 Subscription 对象可以被用于
-   * try-with-resources 语句块中。
+   * Implements the {@link AutoCloseable} interface.
+   *
+   * <p>When this {@code Subscription} object is used in a try-with-resources
+   * statement, this method is automatically invoked upon exiting the try block.
+   * Its behavior is equivalent to calling {@link #unsubscribe()}, ensuring that
+   * the subscription is properly terminated and associated resources are released.
    */
   default void close() {
     unsubscribe();

@@ -3,18 +3,19 @@ package atoma.storage.mongo.command;
 import atoma.api.coordination.Resource;
 import atoma.api.coordination.command.CommandHandlerContext;
 import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoDatabase;
 
 import java.util.Optional;
 
 public class MongoCommandHandlerContext implements CommandHandlerContext {
-
   private final MongoClient client;
-  private final String dbName;
   private final String resourceId;
+  private final MongoDatabase mongoDatabase;
 
-  public MongoCommandHandlerContext(MongoClient client, String dbName, String resourceId) {
+  public MongoCommandHandlerContext(
+      MongoClient client, MongoDatabase mongoDatabase, String resourceId) {
     this.client = client;
-    this.dbName = dbName;
+    this.mongoDatabase = mongoDatabase;
     this.resourceId = resourceId;
   }
 
@@ -33,7 +34,7 @@ public class MongoCommandHandlerContext implements CommandHandlerContext {
     return client;
   }
 
-  public String getDbName() {
-    return dbName;
+  public MongoDatabase getMongoDatabase() {
+    return mongoDatabase;
   }
 }
