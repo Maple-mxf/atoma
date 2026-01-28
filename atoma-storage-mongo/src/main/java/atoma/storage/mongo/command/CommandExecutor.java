@@ -45,6 +45,11 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+/**
+ * @see FailsafeException
+ * @see TimeoutExceededException
+ * @param <R>
+ */
 public class CommandExecutor<R> {
 
   // Requests acknowledgement that the "calculated majority" of data-bearing voting members
@@ -72,11 +77,7 @@ public class CommandExecutor<R> {
 
   private final MongoClient client;
   private final List<Policy<Object>> policies = new ArrayList<>(4);
-  private final List<RetryPolicyBuilder<Object>> retryPolicyBuilderList = new ArrayList<>();
-  private long delay = 5;
-  private long maxDelay = 120;
-  private ChronoUnit unit = ChronoUnit.SECONDS;
-  private int maxRetrie = 120;
+  private final List<RetryPolicyBuilder<Object>> retryPolicyBuilderList = new ArrayList<>(4);
 
   private boolean txn = true;
 
@@ -119,6 +120,7 @@ public class CommandExecutor<R> {
   }
 
   public CommandExecutor<R> withTimeout(Duration timeout) {
+    if (timeout.isNegative()) return this;
     this.policies.add(Timeout.of(timeout));
     return this;
   }
@@ -133,19 +135,14 @@ public class CommandExecutor<R> {
     return this;
   }
 
-  public CommandExecutor<R> retryOnCode(MongoErrorCode code1, MongoErrorCode... codes) {
-    final Set<MongoErrorCode> codeSet = new HashSet<>();
-    codeSet.add(code1);
-    Collections.addAll(codeSet, codes);
-    Set<Integer> intErrorCodeSet =
-        codeSet.stream().map(MongoErrorCode::getCode).collect(Collectors.toUnmodifiableSet());
+  public CommandExecutor<R> retryOnCode(MongoErrorCode code) {
     this.retryPolicyBuilderList.add(
         RetryPolicy.builder()
             .withMaxRetries(-1)
             .handleIf(
                 throwable ->
                     throwable instanceof MongoException dbError
-                        && intErrorCodeSet.contains(dbError.getCode())));
+                        && dbError.getCode() == code.getCode()));
     return this;
   }
 
@@ -166,28 +163,11 @@ public class CommandExecutor<R> {
     return this;
   }
 
-  @SafeVarargs
-  public final CommandExecutor<R> retryOnException(
-      Class<? extends Throwable> interestedException1,
-      Class<? extends Throwable>... interestedExceptions) {
-
-    Set<Class<? extends Throwable>> _interestedExceptions = new HashSet<>();
-    _interestedExceptions.add(interestedException1);
-    Collections.addAll(_interestedExceptions, interestedExceptions);
-
+  public final CommandExecutor<R> retryOnException(Class<? extends Throwable> interestedException) {
     this.retryPolicyBuilderList.add(
         RetryPolicy.builder()
             .withMaxRetries(-1)
-            .handleIf(e -> _interestedExceptions.contains(e.getClass())));
-    return this;
-  }
-
-  public CommandExecutor<R> withBackoff(
-      long delay, long maxDelay, ChronoUnit unit, int maxRetries) {
-    this.delay = delay;
-    this.maxDelay = maxDelay;
-    this.unit = unit;
-    this.maxRetrie = maxRetries;
+            .handleIf(e -> e.getClass().equals(interestedException)));
     return this;
   }
 

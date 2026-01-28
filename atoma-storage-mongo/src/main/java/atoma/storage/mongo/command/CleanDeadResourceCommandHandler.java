@@ -6,17 +6,27 @@ import atoma.api.coordination.command.CleanDeadResourceCommand;
 import atoma.api.coordination.command.CommandHandler;
 import atoma.api.coordination.command.HandlesCommand;
 import com.google.auto.service.AutoService;
+import com.mongodb.bulk.BulkWriteResult;
 import com.mongodb.client.ClientSession;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.DeleteOneModel;
+import com.mongodb.client.result.DeleteResult;
+import com.mongodb.client.result.UpdateResult;
 import org.bson.Document;
 import org.bson.conversions.Bson;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.function.Function;
 
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.LEASE_NAMESPACE;
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.MUTEX_LOCK_NAMESPACE;
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.RW_LOCK_NAMESPACE;
 import static com.mongodb.client.model.Accumulators.addToSet;
 import static com.mongodb.client.model.Accumulators.first;
 import static com.mongodb.client.model.Accumulators.push;
@@ -38,6 +48,8 @@ import static com.mongodb.client.model.Updates.combine;
 import static com.mongodb.client.model.Updates.inc;
 import static com.mongodb.client.model.Updates.pull;
 import static com.mongodb.client.model.Updates.unset;
+import static java.util.Collections.emptyList;
+import static java.util.Collections.singletonList;
 
 /**
  * Handles the server-side logic for cleaning up dead resources.
@@ -57,15 +69,17 @@ import static com.mongodb.client.model.Updates.unset;
 public class CleanDeadResourceCommandHandler
     extends MongoCommandHandler<CleanDeadResourceCommand.Clean, Void> {
 
+  final Logger log = LoggerFactory.getLogger(CleanDeadResourceCommandHandler.class);
+
   @Override
   public Void execute(CleanDeadResourceCommand.Clean command, MongoCommandHandlerContext context) {
     final MongoClient client = context.getClient();
 
     final Function<ClientSession, Void> cmdBlock =
         session -> {
-          cleanMutexLocks(context);
-          cleanReadWriteLocks(context);
-          cleanSemaphores(context);
+          cleanMutexLocks(context, command);
+          cleanReadWriteLocks(context, command);
+          cleanSemaphores(context, command);
           return null;
         };
 
@@ -84,22 +98,31 @@ public class CleanDeadResourceCommandHandler
    * Finds and deletes all mutex locks that reference a non-existent lease.
    *
    * @param context the command handler context
+   * @param command the clean command
    */
-  private void cleanMutexLocks(MongoCommandHandlerContext context) {
-    final MongoCollection<Document> lockCollection =
-        getCollection(context, AtomaCollectionNamespace.MUTEX_LOCK_NAMESPACE);
+  private void cleanMutexLocks(
+      MongoCommandHandlerContext context, CleanDeadResourceCommand.Clean command) {
+    final MongoCollection<Document> lockCollection = getCollection(context, MUTEX_LOCK_NAMESPACE);
 
     final List<Bson> pipeline =
         Arrays.asList(
-            lookup(AtomaCollectionNamespace.LEASE_NAMESPACE, "lease", "_id", "lease_doc"),
-            match(eq("lease_doc", new ArrayList<>())),
-            project(fields(include("_id"))));
+            lookup(LEASE_NAMESPACE, "lease", "_id", "lease_doc"),
+            match(eq("lease_doc", emptyList())),
+            project(fields(include("_id", "lease"))));
 
-    final List<Object> idsToDelete =
-        lockCollection.aggregate(pipeline).map(doc -> doc.get("_id")).into(new ArrayList<>());
+    List<DeleteOneModel<Document>> deleteOneModelList =
+        lockCollection.aggregate(pipeline).into(new ArrayList<>()).stream()
+            .map(
+                doc ->
+                    new DeleteOneModel<Document>(
+                        and(eq("_id", doc.getString("_id")), eq("lease", doc.getString("lease")))))
+            .toList();
 
-    if (!idsToDelete.isEmpty()) {
-      lockCollection.deleteMany(in("_id", idsToDelete));
+    if (!deleteOneModelList.isEmpty()) {
+      BulkWriteResult bulkWriteResult = lockCollection.bulkWrite(deleteOneModelList);
+      log.info(
+          "Detected the presence of inactive mutex locks. delete count: {}",
+          bulkWriteResult.getDeletedCount());
     }
   }
 
@@ -110,10 +133,11 @@ public class CleanDeadResourceCommandHandler
    * if its lease is dead. It then deletes any read-write lock documents that have become empty.
    *
    * @param context the command handler context
+   * @param command
    */
-  private void cleanReadWriteLocks(MongoCommandHandlerContext context) {
-    final MongoCollection<Document> rwLockCollection =
-        getCollection(context, AtomaCollectionNamespace.RW_LOCK_NAMESPACE);
+  private void cleanReadWriteLocks(
+      MongoCommandHandlerContext context, CleanDeadResourceCommand.Clean command) {
+    final MongoCollection<Document> collection = getCollection(context, RW_LOCK_NAMESPACE);
 
     final List<Bson> pipeline =
         Arrays.asList(
@@ -125,21 +149,28 @@ public class CleanDeadResourceCommandHandler
                             "$concatArrays",
                             Arrays.asList(
                                 new Document(
-                                    "$map",
-                                    new Document("input", "$read_locks")
-                                        .append("as", "rl")
-                                        .append("in", "$$rl.lease")),
+                                    "$cond",
+                                    List.of(
+                                        new Document("$isArray", "$read_locks"),
+                                        new Document(
+                                            "$map",
+                                            new Document("input", "$read_locks")
+                                                .append("as", "rl")
+                                                .append("in", "$$rl.lease")),
+                                        emptyList())),
                                 new Document(
                                     "$ifNull",
-                                    Arrays.asList("$write_lock.lease", new ArrayList<>()))))),
+                                    Arrays.asList(
+                                        singletonList("$write_lock.lease"), emptyList()))))),
                     computed("doc", "$$ROOT"))),
             unwind("$leases"),
-            lookup(AtomaCollectionNamespace.LEASE_NAMESPACE, "leases", "_id", "lease_doc"),
-            match(eq("lease_doc", new ArrayList<>())),
+            lookup(LEASE_NAMESPACE, "leases", "_id", "lease_doc"),
+            match(
+                new Document(
+                    "$expr", new Document("$eq", List.of(new Document("$size", "$lease_doc"), 0)))),
             group("$_id", first("doc", "$doc"), addToSet("dead_leases", "$leases")));
 
-    final List<Document> locksToClean =
-        rwLockCollection.aggregate(pipeline).into(new ArrayList<>());
+    final List<Document> locksToClean = collection.aggregate(pipeline).into(new ArrayList<>());
 
     for (Document lockInfo : locksToClean) {
       final Document doc = (Document) lockInfo.get("doc");
@@ -153,16 +184,17 @@ public class CleanDeadResourceCommandHandler
         updates.add(unset("write_lock"));
       }
 
-      rwLockCollection.updateOne(eq("_id", doc.get("_id")), combine(updates));
+      UpdateResult updateResult = collection.updateOne(eq("_id", doc.get("_id")), combine(updates));
     }
 
-    rwLockCollection.deleteMany(
-        and(
-            or(eq("write_lock", null), exists("write_lock", false)),
-            or(
-                eq("read_locks", null),
-                exists("read_locks", false),
-                eq("read_locks", new ArrayList<>()))));
+    DeleteResult deleteResult =
+        collection.deleteMany(
+            and(
+                or(eq("write_lock", null), exists("write_lock", false)),
+                or(
+                    eq("read_locks", null),
+                    exists("read_locks", false),
+                    eq("read_locks", new ArrayList<>()))));
   }
 
   /**
@@ -172,8 +204,10 @@ public class CleanDeadResourceCommandHandler
    * lease entries from the {@code leases} map.
    *
    * @param context the command handler context
+   * @param command
    */
-  private void cleanSemaphores(MongoCommandHandlerContext context) {
+  private void cleanSemaphores(
+      MongoCommandHandlerContext context, CleanDeadResourceCommand.Clean command) {
     final MongoCollection<Document> semaphoreCollection =
         getCollection(context, AtomaCollectionNamespace.SEMAPHORE_NAMESPACE);
 
@@ -184,8 +218,7 @@ public class CleanDeadResourceCommandHandler
                     include("_id", "available_permits"),
                     computed("leases_as_array", new Document("$objectToArray", "$leases")))),
             unwind("$leases_as_array"),
-            lookup(
-                AtomaCollectionNamespace.LEASE_NAMESPACE, "leases_as_array.k", "_id", "lease_doc"),
+            lookup(LEASE_NAMESPACE, "leases_as_array.k", "_id", "lease_doc"),
             match(eq("lease_doc", new ArrayList<>())),
             group(
                 "$_id",

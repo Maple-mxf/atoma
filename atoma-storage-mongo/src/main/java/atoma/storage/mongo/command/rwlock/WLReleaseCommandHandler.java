@@ -84,7 +84,11 @@ public class WLReleaseCommandHandler
 
     Function<ClientSession, Void> cmdBlock =
         session -> {
-          Bson filter = and(eq("_id", context.getResourceId()), eq("holder", command.holderId()));
+          Bson filter =
+              and(
+                  eq("_id", context.getResourceId()),
+                  eq("write_lock.holder", command.holderId()),
+                  eq("write_lock.lease", command.leaseId()));
           DeleteResult deleteResult = collection.deleteOne(filter);
 
           if (deleteResult.getDeletedCount() == 1L) return null;

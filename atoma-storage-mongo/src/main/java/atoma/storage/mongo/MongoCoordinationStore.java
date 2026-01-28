@@ -12,7 +12,6 @@ import atoma.api.coordination.Subscription;
 import atoma.api.coordination.command.Command;
 import atoma.api.coordination.command.CommandHandler;
 import atoma.api.coordination.command.HandlesCommand;
-import atoma.storage.mongo.command.AtomaCollectionNamespace;
 import atoma.storage.mongo.command.CommandExecutor;
 import atoma.storage.mongo.command.MongoCommandHandlerContext;
 import atoma.storage.mongo.command.MongoErrorCode;
@@ -40,6 +39,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.*;
 import static com.mongodb.client.model.Aggregates.match;
 import static com.mongodb.client.model.Filters.in;
 import static java.util.Collections.singletonList;
@@ -73,13 +73,13 @@ public class MongoCoordinationStore implements CoordinationStore {
                     match(
                         in(
                             "ns.coll",
-                            AtomaCollectionNamespace.LEASE_NAMESPACE,
-                            AtomaCollectionNamespace.DOUBLE_BARRIER_NAMESPACE,
-                            AtomaCollectionNamespace.BARRIER_NAMESPACE,
-                            AtomaCollectionNamespace.COUNTDOWN_LATCH_NAMESPACE,
-                            AtomaCollectionNamespace.SEMAPHORE_NAMESPACE,
-                            AtomaCollectionNamespace.MUTEX_LOCK_NAMESPACE,
-                            AtomaCollectionNamespace.RW_LOCK_NAMESPACE))))
+                            LEASE_NAMESPACE,
+                            DOUBLE_BARRIER_NAMESPACE,
+                            BARRIER_NAMESPACE,
+                            COUNTDOWN_LATCH_NAMESPACE,
+                            SEMAPHORE_NAMESPACE,
+                            MUTEX_LOCK_NAMESPACE,
+                            RW_LOCK_NAMESPACE))))
             .fullDocument(FullDocument.UPDATE_LOOKUP)
             .fullDocumentBeforeChange(FullDocumentBeforeChange.WHEN_AVAILABLE)
             .cursor();
@@ -93,7 +93,7 @@ public class MongoCoordinationStore implements CoordinationStore {
   private void checkLeaseIndex() {
     MongoCollection<Document> collection =
         mongoDatabase
-            .getCollection(AtomaCollectionNamespace.LEASE_NAMESPACE)
+            .getCollection(LEASE_NAMESPACE)
             .withReadConcern(CommandExecutor.READ_CONCERN)
             .withWriteConcern(CommandExecutor.WRITE_CONCERN);
 
@@ -115,7 +115,7 @@ public class MongoCoordinationStore implements CoordinationStore {
           if (indexFinder.get()) return true;
           collection.createIndex(
               Indexes.ascending("expire_time"),
-              new IndexOptions().expireAfter(32L, SECONDS).name("expire_time"));
+              new IndexOptions().expireAfter(8L, SECONDS).name("expire_time"));
           return indexFinder.get();
         };
 

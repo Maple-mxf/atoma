@@ -17,6 +17,7 @@ dependencies {
     api(project(":atoma-api"))
     api(project(":atoma-core"))
     implementation(lib.guava)
+    implementation(lib.slf4j)
 
     errorprone("com.google.errorprone:error_prone_core:2.28.0")
 

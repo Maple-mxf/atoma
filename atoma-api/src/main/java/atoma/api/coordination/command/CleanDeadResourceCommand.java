@@ -12,6 +12,7 @@ public final class CleanDeadResourceCommand {
    * <p>This command signals the {@link atoma.api.coordination.CoordinationStore}
    * to identify and remove any resources that are no longer valid, such as
    * locks held by expired leases. It does not return any value upon completion.
+   * @param leaseId The lease ID of the client.
    */
-  public record Clean() implements Command<Void> {}
+  public record Clean(String leaseId) implements Command<Void> {}
 }

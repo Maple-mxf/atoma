@@ -13,6 +13,7 @@ import atoma.core.internal.synchronizer.DefaultCyclicBarrier;
 import atoma.core.internal.synchronizer.DefaultDoubleCyclicBarrier;
 import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.Table;
+import com.google.common.collect.Tables;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 import java.time.Duration;
@@ -21,10 +22,11 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class AtomaClient implements AutoCloseable {
+
   private final CoordinationStore coordinationStore;
 
   private final Table<Class<? extends Resourceful>, String, Resourceful> atomaResources =
-      HashBasedTable.create();
+      Tables.synchronizedTable(HashBasedTable.create());
 
   private final ScheduledExecutorService scheduleExecutor =
       Executors.newScheduledThreadPool(
@@ -32,13 +34,18 @@ public class AtomaClient implements AutoCloseable {
 
   public AtomaClient(CoordinationStore coordinationStore) {
     this.coordinationStore = coordinationStore;
+    CleanDeadResourceCommand.Clean cleanCommand = new CleanDeadResourceCommand.Clean(null);
+    coordinationStore.execute("", cleanCommand);
+
     scheduleExecutor.scheduleAtFixedRate(
         () -> {
-          CleanDeadResourceCommand.Clean command = new CleanDeadResourceCommand.Clean();
-          coordinationStore.execute("", command);
+          try {
+            coordinationStore.execute("", cleanCommand);
+          } catch (Throwable ignore) {
+          }
         },
         0,
-        60,
+        2,
         TimeUnit.SECONDS);
     Runtime.getRuntime()
         .addShutdownHook(
@@ -48,24 +55,34 @@ public class AtomaClient implements AutoCloseable {
                     try {
                       resourceful.close();
                     } catch (Exception e) {
-                      //e.printStackTrace();
+                      // e.printStackTrace();
                     }
                   }
                 }));
   }
 
-  public synchronized Lease grantLease(Duration ttl) {
+  public Lease grantLease(Duration ttl) {
     Lease lease =
         new DefaultLease(
             scheduleExecutor,
             coordinationStore,
             ttl,
-            (t) -> atomaResources.remove(Lease.class, t.getResourceId()));
+            (t) -> {
+              DefaultLease removedLease =
+                  (DefaultLease) atomaResources.remove(Lease.class, t.getResourceId());
+
+              if (removedLease != null) {
+                CleanDeadResourceCommand.Clean cleanCommand = new CleanDeadResourceCommand.Clean(
+                        removedLease.getResourceId()
+                );
+                coordinationStore.execute("", cleanCommand);
+              }
+            });
     this.atomaResources.put(Lease.class, lease.getResourceId(), lease);
     return lease;
   }
 
-  public synchronized CountDownLatch getCountDownLatch(String resourceId, int count) {
+  public CountDownLatch getCountDownLatch(String resourceId, int count) {
     CountDownLatch countDownLatch =
         (CountDownLatch) atomaResources.get(CountDownLatch.class, resourceId);
     if (countDownLatch == null) {
@@ -75,7 +92,7 @@ public class AtomaClient implements AutoCloseable {
     return countDownLatch;
   }
 
-  public synchronized CyclicBarrier getCyclicBarrier(String resourceId, Lease lease, int parties) {
+  public CyclicBarrier getCyclicBarrier(String resourceId, Lease lease, int parties) {
     CyclicBarrier barrier = (CyclicBarrier) atomaResources.get(CyclicBarrier.class, resourceId);
     if (barrier == null) {
       barrier =
@@ -86,8 +103,7 @@ public class AtomaClient implements AutoCloseable {
     return barrier;
   }
 
-  public synchronized DoubleCyclicBarrier getDoubleCyclicBarrier(
-      String resourceId, Lease lease, int parties) {
+  public DoubleCyclicBarrier getDoubleCyclicBarrier(String resourceId, Lease lease, int parties) {
     DoubleCyclicBarrier doubleBarrier =
         (DoubleCyclicBarrier) atomaResources.get(DoubleCyclicBarrier.class, resourceId);
     if (doubleBarrier == null) {
@@ -100,15 +116,20 @@ public class AtomaClient implements AutoCloseable {
   }
 
   @Override
-  public void close() throws Exception {
+  public synchronized void close() throws Exception {
     coordinationStore.close();
     scheduleExecutor.shutdown();
-    this.atomaResources
+
+    // Avoid ConcurrentModifyException
+    HashBasedTable<Class<? extends Resourceful>, String, Resourceful> atomaResoucesCopier =
+        HashBasedTable.create(atomaResources);
+    atomaResoucesCopier
         .values()
         .forEach(
-            res -> {
+            resourceful -> {
               try {
-                res.close();
+                // Which will be modify atomaResources
+                resourceful.close();
               } catch (Exception e) {
                 throw new AtomaStateException(e);
               }

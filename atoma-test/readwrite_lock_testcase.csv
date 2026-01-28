@@ -1,0 +1,21 @@
+Function Scope,Test CASE ID,Description,Status
+锁获取测试,TEST-ACQ-001,单个客户端成功获取读锁，验证租约创建和续期,Pending
+锁获取测试,TEST-ACQ-002,单个客户端成功获取写锁，验证独占性,Pending
+锁获取测试,TEST-ACQ-003,多个客户端同时获取读锁，验证共享性,Pending
+锁获取测试,TEST-ACQ-004,写锁获取时阻塞后续读锁获取，验证优先级,Pending
+锁获取测试,TEST-ACQ-005,读锁存在时写锁获取被阻塞，验证互斥性,Pending
+锁获取测试,TEST-ACQ-006,续租失败后锁自动释放，验证租约过期机制,Pending
+锁获取测试,TEST-ACQ-007,获取锁时设置不同超时时间，验证超时控制,Pending
+锁获取测试,TEST-ACQ-008,获取锁重试机制测试，验证网络异常处理,Pending
+锁获取测试,TEST-ACQ-009,客户端崩溃后锁自动清理，验证Session管理,Pending
+锁获取测试,TEST-ACQ-010,并发密集获取释放锁，验证性能和无死锁,Pending
+锁释放测试,TEST-REL-001,客户端主动释放读锁，验证锁计数器减少,Pending
+锁释放测试,TEST-REL-002,客户端主动释放写锁，验证等待锁被唤醒,Pending
+锁释放测试,TEST-REL-003,读锁全部释放后写锁获取成功，验证状态转换,Pending
+锁释放测试,TEST-REL-004,强制释放被占用的锁，验证管理接口功能,Pending
+锁释放测试,TEST-REL-005,释放不存在的锁，验证错误处理,Pending
+锁释放测试,TEST-REL-006,租约过期自动释放锁，验证心跳检测机制,Pending
+锁释放测试,TEST-REL-007,释放锁后通知所有等待客户端，验证唤醒机制,Pending
+锁释放测试,TEST-REL-008,客户端异常退出后的锁释放，验证资源清理,Pending
+锁释放测试,TEST-REL-009,释放锁时的并发安全性测试，验证竞态条件,Pending
+锁释放测试,TEST-REL-010,锁释放后的状态一致性验证，验证元数据清理,Pending

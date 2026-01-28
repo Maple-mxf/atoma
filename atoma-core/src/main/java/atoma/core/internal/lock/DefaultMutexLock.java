@@ -3,11 +3,14 @@ package atoma.core.internal.lock;
 import atoma.api.AtomaException;
 import atoma.api.OperationTimeoutException;
 import atoma.api.coordination.CoordinationStore;
+import atoma.api.coordination.Resource;
 import atoma.api.coordination.ResourceChangeEvent;
 import atoma.api.coordination.Subscription;
 import atoma.api.coordination.command.LockCommand;
 import atoma.api.lock.Lock;
 import atoma.core.internal.ThreadUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
@@ -23,6 +26,9 @@ import java.util.concurrent.locks.ReentrantLock;
  * thread. Only thread A can invoked {@link DefaultMutexLock#unlock()} method successful.
  */
 public class DefaultMutexLock extends Lock {
+
+  private final Logger log = LoggerFactory.getLogger(DefaultMutexLock.class);
+
   private final String resourceId;
   private final String leaseId;
   private final CoordinationStore coordination;
@@ -57,6 +63,13 @@ public class DefaultMutexLock extends Lock {
             Lock.class,
             resourceId,
             event -> {
+              if (log.isDebugEnabled()) {
+                log.debug(
+                    "Mutex lock received an event. Event-type: {}. Latest version: {} ",
+                    event.getType(),
+                    event.getNewNode().map(Resource::getVersion).orElse(-1L));
+              }
+
               if (Objects.requireNonNull(event.getType())
                   == ResourceChangeEvent.EventType.DELETED) {
                 localLock.lock();
@@ -196,7 +209,7 @@ public class DefaultMutexLock extends Lock {
 
         // Acquisition failed because an unexpected error.
         // Which will be retrying if latest-version is negatived.
-        if (result.serverLatestVersion() < 0 || clientLogicalLockVersion == 0L) {
+        if (result.serverLogicalLatestVersion() < 0 || clientLogicalLockVersion == 0L) {
           continue Retry;
         }
       } catch (AtomaException e) {
@@ -232,7 +245,7 @@ public class DefaultMutexLock extends Lock {
             }
             remainingNanos -= (System.nanoTime() - start);
           } else {
-            if (result.serverLatestVersion() >= this.clientLogicalLockVersion)
+            if (result.serverLogicalLatestVersion() >= this.clientLogicalLockVersion)
               remoteLockAvailable.await();
             else continue Retry;
           }

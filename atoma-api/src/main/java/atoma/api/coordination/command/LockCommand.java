@@ -16,11 +16,11 @@ public final class LockCommand {
    * Represents the result of an {@link Acquire} command.
    *
    * @param acquired {@code true} if the lock was successfully acquired or re-entered.
-   * @param serverLatestVersion The latest-version represent value that is advancing state-data version.
+   * @param serverLogicalLatestVersion The latest-version represent value that is advancing state-data version.
    *     If the state already exists, a value greater than 0 will be returned; otherwise, a negative
    *     value will be returned
    */
-  public record AcquireResult(boolean acquired, long serverLatestVersion) {}
+  public record AcquireResult(boolean acquired, long serverLogicalLatestVersion) {}
 
   /**
    * Represents the result of a {@link Release} command.

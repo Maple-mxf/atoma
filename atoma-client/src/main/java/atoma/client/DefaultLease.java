@@ -12,6 +12,7 @@ import atoma.api.synchronizer.Semaphore;
 import atoma.core.internal.lock.DefaultMutexLock;
 import atoma.core.internal.lock.DefaultReadWriteLock;
 import atoma.core.internal.synchronizer.DefaultSemaphore;
+import com.google.common.annotations.VisibleForTesting;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -24,7 +25,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /** The default implementation for lease. */
-class DefaultLease extends Lease {
+public class DefaultLease extends Lease {
+
   private final CoordinationStore coordinationStore;
   private final String id;
 
@@ -59,13 +61,15 @@ class DefaultLease extends Lease {
         executor.scheduleAtFixedRate(
             () -> {
               try {
+                System.out.printf("Lease %s starting renew %n", this.id);
+
                 LeaseCommand.TimeToLive ttlCmd =
                     new LeaseCommand.TimeToLive(
                         id, nextExpireTime.plusMillis(ttlDuration.toMillis()));
                 LeaseCommand.TimeToLiveResult ttlResult = coordinationStore.execute(id, ttlCmd);
                 nextExpireTime = ttlResult.nextExpireTime();
               } catch (Exception e) {
-                // e.printStackTrace();
+                e.printStackTrace();
               }
             },
             0,
@@ -83,11 +87,13 @@ class DefaultLease extends Lease {
         });
   }
 
+  @Deprecated
   private void closeManagementResource() {
     for (Leasable leasable : atomaLeasableResources.values()) {
       try {
         leasable.close();
       } catch (Exception ignored) {
+        ignored.printStackTrace();
       }
     }
   }
@@ -122,16 +128,22 @@ class DefaultLease extends Lease {
   @Override
   public synchronized void revoke() {
     if (closed.compareAndSet(false, true)) {
-      closeManagementResource();
       LeaseCommand.Revoke command = new LeaseCommand.Revoke(id);
       coordinationStore.execute(id, command);
-      while (!future.isCancelled() && !future.isDone()) {
-        try {
-          future.cancel(true);
-        } catch (Exception ignored) {
-        }
-      }
+      cancelTimeToLive();
       onRevokeListener.accept(this);
+
+      closeManagementResource();
+    }
+  }
+
+  @VisibleForTesting
+  private void cancelTimeToLive() {
+    while (!future.isCancelled() && !future.isDone()) {
+      try {
+        future.cancel(true);
+      } catch (Exception ignored) {
+      }
     }
   }
 

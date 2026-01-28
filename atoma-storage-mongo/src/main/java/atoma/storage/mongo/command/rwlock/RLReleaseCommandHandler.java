@@ -27,8 +27,8 @@ import static com.mongodb.client.model.Filters.*;
 import static com.mongodb.client.model.Updates.*;
 
 /**
- * Handles the {@link ReadWriteLockCommand.ReleaseRead} command to release a distributed, shared read
- * lock.
+ * Handles the {@link ReadWriteLockCommand.ReleaseRead} command to release a distributed, shared
+ * read lock.
  *
  * <p><b>Warning:</b> This handler does not correctly release the read lock. It verifies that the
  * caller holds a read lock but fails to remove the caller's entry from the {@code read_locks}
@@ -36,8 +36,9 @@ import static com.mongodb.client.model.Updates.*;
  *
  * <h3>Actual Behavior</h3>
  *
- * <p>The handler executes a {@code findOneAndUpdate} operation that locates the lock document if the
- * caller's {@code holder} and {@code lease} identifiers are present in the {@code read_locks} array.
+ * <p>The handler executes a {@code findOneAndUpdate} operation that locates the lock document if
+ * the caller's {@code holder} and {@code lease} identifiers are present in the {@code read_locks}
+ * array.
  *
  * <p>If a matching document is found, the operation only increments a top-level {@code version}
  * field. It <b>does not</b> remove the caller's sub-document from the {@code read_locks} array,
@@ -69,10 +70,21 @@ public class RLReleaseCommandHandler
                       elemMatch(
                           "read_locks",
                           and(eq("holder", command.holderId()), eq("lease", command.leaseId())))),
-                  inc("version", 1),
+                  combine(
+                      inc("version", 1),
+                      pull(
+                          "read_locks",
+                          new Document("holder", command.holderId())
+                              .append("lease", command.leaseId()))),
                   new FindOneAndUpdateOptions().returnDocument(ReturnDocument.AFTER));
 
-          if (lockDoc != null) {
+          if (lockDoc != null
+              && (lockDoc.getList("read_locks", Document.class) == null
+                  || lockDoc.getList("read_locks", Document.class).stream()
+                      .noneMatch(
+                          t ->
+                              t.getString("lease").equals(command.leaseId())
+                                  && t.getString("holder").equals(command.holderId())))) {
             return null;
           }
 

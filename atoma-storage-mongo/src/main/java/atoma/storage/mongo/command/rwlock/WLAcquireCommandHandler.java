@@ -1,6 +1,7 @@
 package atoma.storage.mongo.command.rwlock;
 
 import atoma.api.AtomaStateException;
+import atoma.api.OperationTimeoutException;
 import atoma.api.Result;
 import atoma.api.coordination.command.CommandHandler;
 import atoma.api.coordination.command.HandlesCommand;
@@ -18,8 +19,14 @@ import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.FindOneAndUpdateOptions;
 import com.mongodb.client.model.ReturnDocument;
+import dev.failsafe.TimeoutExceededException;
+import org.bson.BsonNull;
 import org.bson.Document;
+import org.bson.conversions.Bson;
 
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
 
@@ -29,8 +36,8 @@ import static com.mongodb.client.model.Filters.*;
 import static com.mongodb.client.model.Updates.*;
 
 /**
- * Handles the {@link ReadWriteLockCommand.AcquireWrite} command to acquire a distributed,
- * exclusive write lock.
+ * Handles the {@link ReadWriteLockCommand.AcquireWrite} command to acquire a distributed, exclusive
+ * write lock.
  *
  * <p>This handler implements a non-reentrant write lock acquisition. It uses a single atomic
  * MongoDB {@code findOneAndUpdate} operation to ensure that a write lock is granted only when no
@@ -40,10 +47,11 @@ import static com.mongodb.client.model.Updates.*;
  *
  * <p>A write lock is successfully acquired if and only if the target resource document meets the
  * following criteria at the time of the operation:
+ *
  * <ol>
- *   <li>The document has no existing write lock (the {@code write_lock} field does not exist).</li>
+ *   <li>The document has no existing write lock (the {@code write_lock} field does not exist).
  *   <li>The document has no existing read locks (the {@code read_locks} field either does not exist
- *       or is an empty array).</li>
+ *       or is an empty array).
  * </ol>
  *
  * <p>If these conditions are met, the operation atomically creates the {@code write_lock}
@@ -84,6 +92,93 @@ import static com.mongodb.client.model.Updates.*;
 @HandlesCommand(ReadWriteLockCommand.AcquireWrite.class)
 public class WLAcquireCommandHandler
     extends MongoCommandHandler<ReadWriteLockCommand.AcquireWrite, LockCommand.AcquireResult> {
+  private List<Bson> buildAggregationPipeline(Document owner) {
+    return List.of(
+        new Document(
+            "$replaceRoot",
+            new Document(
+                "newRoot",
+                new Document(
+                    "$cond",
+                    Arrays.asList(
+
+                        // ================= if =================
+                        new Document(
+                            "$and",
+                            Arrays.asList(
+
+                                // ---- read_locks missing OR size == 0 ----
+                                new Document(
+                                    "$or",
+                                    Arrays.asList(
+                                        new Document(
+                                            "$eq",
+                                            Arrays.asList(
+                                                new Document("$type", "$read_locks"), "missing")),
+                                        new Document(
+                                            "$cond",
+                                            Arrays.asList(
+                                                new Document(
+                                                    "$eq",
+                                                    Arrays.asList(
+                                                        new Document("$size", "$read_locks"), 0)),
+                                                true,
+                                                false)))),
+
+                                // ---- write_lock.holder & lease missing or null ----
+                                new Document(
+                                    "$and",
+                                    Arrays.asList(
+                                        new Document(
+                                            "$or",
+                                            Arrays.asList(
+                                                new Document(
+                                                    "$eq",
+                                                    Arrays.asList(
+                                                        new Document("$type", "$write_lock.holder"),
+                                                        "missing")),
+                                                new Document(
+                                                    "$eq",
+                                                    Arrays.asList(
+                                                        "$write_lock.holder", BsonNull.VALUE)))),
+                                        new Document(
+                                            "$or",
+                                            Arrays.asList(
+                                                new Document(
+                                                    "$eq",
+                                                    Arrays.asList(
+                                                        new Document("$type", "$write_lock.lease"),
+                                                        "missing")),
+                                                new Document(
+                                                    "$eq",
+                                                    Arrays.asList(
+                                                        "$write_lock.lease", BsonNull.VALUE)))))))),
+
+                        // ================= then =================
+                        new Document()
+                            .append("write_lock", owner)
+                            .append(
+                                "version",
+                                new Document(
+                                    "$cond",
+                                    Arrays.asList(
+                                        new Document(
+                                            "$or",
+                                            Arrays.asList(
+                                                new Document(
+                                                    "$eq",
+                                                    Arrays.asList(
+                                                        new Document("$type", "$version"),
+                                                        "missing")),
+                                                new Document(
+                                                    "$eq",
+                                                    Arrays.asList("$version", BsonNull.VALUE)))),
+                                        1L,
+                                        new Document("$add", Arrays.asList("$version", 1L))))),
+
+                        // ================= else =================
+                        "$$ROOT")))));
+  }
 
   @Override
   public LockCommand.AcquireResult execute(
@@ -92,43 +187,19 @@ public class WLAcquireCommandHandler
     MongoCollection<Document> collection =
         getCollection(context, AtomaCollectionNamespace.RW_LOCK_NAMESPACE);
 
+    var owner = new Document("holder", command.holderId()).append("lease", command.leaseId());
     Function<ClientSession, LockCommand.AcquireResult> cmdBlock =
         session -> {
           // 1. Attempt lock acquisition
           // Return a duplicate-key exception because of does not match the condition.
-          Document lockDoc = null;
-          try {
-            lockDoc =
-                collection.findOneAndUpdate(
-                    and(
-                        eq("_id", context.getResourceId()),
-                        exists("write_lock.holder", false),
-                        exists("write_lock.lease", false),
-                        or(exists("read_locks", false), size("read_locks", 0))),
-                    combine(
-                        set("write_lock.holder", command.holderId()),
-                        set("write_lock.lease", command.leaseId()),
-                        inc("version", 1L)),
-                    new FindOneAndUpdateOptions()
-                        .upsert(true)
-                        .returnDocument(ReturnDocument.AFTER));
-          }
-          // Fallback logic
-          catch (MongoCommandException e) {
-            if (DUPLICATE_KEY.getCode() == e.getErrorCode()) {
-              // Find latest lock-document
-              lockDoc =
-                  collection
-                      .find(eq("_id", context.getResourceId()), Document.class)
-                      .projection(new Document("version", 1))
-                      .first();
-              return new LockCommand.AcquireResult(
-                  false, Optional.ofNullable(lockDoc).map(t -> t.getLong("version")).orElse(-1L));
-            }
-            throw e;
-          }
+          List<Bson> pipeline = this.buildAggregationPipeline(owner);
+          Document lockDoc =
+              collection.findOneAndUpdate(
+                  eq("_id", context.getResourceId()),
+                  pipeline,
+                  new FindOneAndUpdateOptions().upsert(true).returnDocument(ReturnDocument.AFTER));
 
-            // Acquisition success.
+          // Acquisition success.
           if (lockDoc != null
               && lockDoc.containsKey("write_lock")
               && lockDoc
@@ -139,8 +210,7 @@ public class WLAcquireCommandHandler
                   .get("write_lock", Document.class)
                   .getString("holder")
                   .equals(command.holderId())) {
-            return new LockCommand.AcquireResult(
-                true, lockDoc.get("write_lock", Document.class).getLong("version"));
+            return new LockCommand.AcquireResult(true, lockDoc.getLong("version"));
           }
 
           // Acquisition failed.
@@ -157,11 +227,17 @@ public class WLAcquireCommandHandler
         this.newCommandExecutor(client)
             .withoutTxn()
             .retryOnCode(WRITE_CONFLICT)
+            .retryOnCode(DUPLICATE_KEY)
+            .withTimeout(Duration.of(command.timeout(), command.timeUnit().toChronoUnit()))
             .execute(cmdBlock);
 
     try {
       return result.getOrThrow();
     } catch (Throwable e) {
+      // Translate Exception
+      if (e instanceof TimeoutExceededException timeoutEx) {
+        throw new OperationTimeoutException(timeoutEx);
+      }
       throw new AtomaStateException(e);
     }
   }

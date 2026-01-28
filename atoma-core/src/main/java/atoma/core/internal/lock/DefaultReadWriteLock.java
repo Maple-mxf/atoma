@@ -202,6 +202,8 @@ public class DefaultReadWriteLock extends ReadWriteLock {
     if (closed.compareAndSet(false, true)) {
       if (this.subscription != null) {
         this.subscription.close();
+        this.readLock.close();
+        this.writeLock.close();
       }
     }
   }
@@ -226,7 +228,8 @@ public class DefaultReadWriteLock extends ReadWriteLock {
       this.parent = parent;
     }
 
-    protected abstract Command<LockCommand.AcquireResult> buildAcquireCommand(String holderId);
+    protected abstract Command<LockCommand.AcquireResult> buildAcquireCommand(
+        String holderId, long timeout, TimeUnit timeUnit);
 
     protected abstract Command<Void> buildReleaseCommand(String holderId);
 
@@ -265,6 +268,7 @@ public class DefaultReadWriteLock extends ReadWriteLock {
 
     @Override
     public void lock(long time, TimeUnit unit) throws InterruptedException, TimeoutException {
+      if (time == 0) throw new TimeoutException();
       Objects.requireNonNull(unit);
       acquire(time, unit);
     }
@@ -277,6 +281,8 @@ public class DefaultReadWriteLock extends ReadWriteLock {
         throw new AssertionError("Timeout in non-timed method", e);
       }
     }
+
+    private void forceUnlock() {}
 
     @Override
     public void unlock() {
@@ -296,20 +302,11 @@ public class DefaultReadWriteLock extends ReadWriteLock {
       String holderId = ThreadUtils.getCurrentThreadId();
       var releaseCommand = buildReleaseCommand(holderId);
       parent.coordination.execute(parent.resourceId, releaseCommand);
-
-      //      if (count == 0) {
-      //        reentrancyCounter.remove();
-      //        String holderId = ThreadUtils.getCurrentThreadId();
-      //        var releaseCommand = getReleaseCommand(holderId);
-      //        parent.coordination.execute(parent.resourceId, releaseCommand);
-      //      } else {
-      //        reentrancyCounter.set(count);
-      //      }
     }
 
     @Override
     public void close() {
-      unlock();
+      forceUnlock();
     }
 
     /**
@@ -347,27 +344,26 @@ public class DefaultReadWriteLock extends ReadWriteLock {
         reentrancyCounter.set(reentrancyCounter.get() + 1);
         return;
       }
-      final boolean timed = (unit != null);
-      long remainingNanos = timed ? unit.toNanos(time) : 0;
-      String holderId = ThreadUtils.getCurrentThreadId();
-      var acquireCommand = buildAcquireCommand(holderId);
-      final Condition condition = getCondition();
 
+      final boolean timed = (unit != null && time > 0L);
+      long start = System.nanoTime(), clockTimeout = timed ? unit.toNanos(time) : -1L;
+
+      String holderId = ThreadUtils.getCurrentThreadId();
+
+      final Condition condition = getCondition();
       LockCommand.AcquireResult result;
       Retry:
       for (; ; ) {
+        long remainingNanos = timed ? (clockTimeout - (System.nanoTime() - start)) : -1L;
         try {
+          var acquireCommand = buildAcquireCommand(holderId, remainingNanos, TimeUnit.NANOSECONDS);
           result = parent.coordination.execute(parent.resourceId, acquireCommand);
           if (result.acquired()) {
             reentrancyCounter.set(1);
             return;
           }
 
-          // Acquisition failed because an unexpected error.
-          // Which will be retrying if latest-version is negatived.
-          if (result.serverLatestVersion() < 0 || parent.clientLogicalLockVersion == 0L) {
-            continue Retry;
-          }
+          remainingNanos = timed ? (clockTimeout - (System.nanoTime() - start)) : -1L;
 
         } catch (AtomaException e) {
           Throwable cause = e;
@@ -389,14 +385,18 @@ public class DefaultReadWriteLock extends ReadWriteLock {
           // No need for a local state flag; we just wait for a signal and then re-try.
           if (timed) {
             if (remainingNanos <= 0) throw new TimeoutException("Wait time elapsed.");
-            long start = System.nanoTime();
-            if (!condition.await(remainingNanos, TimeUnit.NANOSECONDS)) {
+
+            if (result.serverLogicalLatestVersion() < parent.clientLogicalLockVersion)
+              continue Retry;
+
+            if (!condition.await(remainingNanos, TimeUnit.NANOSECONDS))
               throw new TimeoutException("Wait time elapsed before signal.");
-            }
-            remainingNanos -= (System.nanoTime() - start);
+
           } else {
-            if (result.serverLatestVersion() >= parent.clientLogicalLockVersion) condition.await();
-            else continue Retry;
+            if (result.serverLogicalLatestVersion() < parent.clientLogicalLockVersion)
+              continue Retry;
+
+            condition.await();
           }
         } finally {
           parent.localLock.unlock();
@@ -413,9 +413,9 @@ public class DefaultReadWriteLock extends ReadWriteLock {
     }
 
     @Override
-    protected Command<LockCommand.AcquireResult> buildAcquireCommand(String holderId) {
-      return new ReadWriteLockCommand.AcquireRead(
-          holderId, parent.leaseId, -1, TimeUnit.MILLISECONDS);
+    protected Command<LockCommand.AcquireResult> buildAcquireCommand(
+        String holderId, long timeout, TimeUnit timeUnit) {
+      return new ReadWriteLockCommand.AcquireRead(holderId, parent.leaseId, timeout, timeUnit);
     }
 
     @Override
@@ -440,14 +440,14 @@ public class DefaultReadWriteLock extends ReadWriteLock {
     }
 
     @Override
-    protected Command<LockCommand.AcquireResult> buildAcquireCommand(String holderId) {
-      return new ReadWriteLockCommand.AcquireWrite(
-          holderId, parent.leaseId, -1, TimeUnit.MILLISECONDS);
+    protected Command<LockCommand.AcquireResult> buildAcquireCommand(
+        String holderId, long timeout, TimeUnit timeUnit) {
+      return new ReadWriteLockCommand.AcquireWrite(holderId, parent.leaseId, timeout, timeUnit);
     }
 
     @Override
     protected Command<Void> buildReleaseCommand(String holderId) {
-      return new ReadWriteLockCommand.ReleaseWrite(holderId);
+      return new ReadWriteLockCommand.ReleaseWrite(holderId, parent.leaseId);
     }
 
     @Override

@@ -54,6 +54,7 @@ public final class ReadWriteLockCommand {
    *
    * @param holderId A unique identifier for the party releasing the lock, which must match the
    *     identifier that acquired it.
+   * @param leaseId The lease ID of the client, ensuring the lock is released if the client fails.
    */
-  public record ReleaseWrite(String holderId) implements Command<Void> {}
+  public record ReleaseWrite(String holderId, String leaseId) implements Command<Void> {}
 }

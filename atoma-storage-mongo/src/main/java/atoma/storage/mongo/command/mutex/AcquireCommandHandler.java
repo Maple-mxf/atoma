@@ -7,9 +7,11 @@ import atoma.api.coordination.command.HandlesCommand;
 import atoma.api.coordination.command.LockCommand;
 import atoma.storage.mongo.command.AtomaCollectionNamespace;
 import atoma.storage.mongo.command.CommandExecutor;
+import atoma.storage.mongo.command.CommandFailureException;
 import atoma.storage.mongo.command.MongoCommandHandler;
 import atoma.storage.mongo.command.MongoCommandHandlerContext;
 import com.google.auto.service.AutoService;
+import com.mongodb.MongoCommandException;
 import com.mongodb.client.ClientSession;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
@@ -22,6 +24,7 @@ import java.time.Duration;
 import java.util.Optional;
 import java.util.function.Function;
 
+import static atoma.storage.mongo.command.MongoErrorCode.DUPLICATE_KEY;
 import static atoma.storage.mongo.command.MongoErrorCode.WRITE_CONFLICT;
 import static com.mongodb.client.model.Filters.and;
 import static com.mongodb.client.model.Filters.eq;
@@ -111,14 +114,17 @@ public final class AcquireCommandHandler
           return new LockCommand.AcquireResult(false, -1L);
         };
 
-    CommandExecutor<LockCommand.AcquireResult> execution =
-        this.newCommandExecutor(client).withoutTxn().retryOnCode(WRITE_CONFLICT);
-
-    if (command.timeout() > 0 && command.timeUnit() != null) {
-      execution.withTimeout(Duration.of(command.timeout(), command.timeUnit().toChronoUnit()));
-    }
-
-    Result<LockCommand.AcquireResult> result = execution.execute(cmdBlock);
+    Result<LockCommand.AcquireResult> result =
+        this.newCommandExecutor(client)
+            .withoutTxn()
+            .retryOnException(CommandFailureException.class)
+            .retryOnException(
+                throwable ->
+                    throwable instanceof MongoCommandException cmdEx
+                        && cmdEx.getCode() == DUPLICATE_KEY.getCode())
+            .retryOnCode(WRITE_CONFLICT)
+            .withTimeout(Duration.of(command.timeout(), command.timeUnit().toChronoUnit()))
+            .execute(cmdBlock);
 
     try {
       return result.getOrThrow();
