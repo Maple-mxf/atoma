@@ -9,6 +9,10 @@ import atoma.api.coordination.Subscription;
 import atoma.api.coordination.command.LockCommand;
 import atoma.api.lock.Lock;
 import atoma.core.internal.ThreadUtils;
+import com.google.common.annotations.Beta;
+import com.google.errorprone.annotations.MustBeClosed;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,6 +29,8 @@ import java.util.concurrent.locks.ReentrantLock;
  * <p>Note: Mutex lock and thread are related. In other words, The mutex-lock acquired by 'A'
  * thread. Only thread A can invoked {@link DefaultMutexLock#unlock()} method successful.
  */
+@Beta
+@ThreadSafe
 public class DefaultMutexLock extends Lock {
 
   private final Logger log = LoggerFactory.getLogger(DefaultMutexLock.class);
@@ -46,6 +52,7 @@ public class DefaultMutexLock extends Lock {
   private boolean isRemoteLockHeld = false;
 
   // The logical-lock-version represent lock-data's latest version.
+  @GuardedBy("localLock")
   private volatile long clientLogicalLockVersion = 0L;
 
   /**
@@ -53,6 +60,7 @@ public class DefaultMutexLock extends Lock {
    * @param leaseId The lease associated with current thread.
    * @param coordination The instance for storing and coordinating state data
    */
+  @MustBeClosed
   public DefaultMutexLock(String resourceId, String leaseId, CoordinationStore coordination) {
     this.resourceId = resourceId;
     this.leaseId = leaseId;
@@ -65,9 +73,10 @@ public class DefaultMutexLock extends Lock {
             event -> {
               if (log.isDebugEnabled()) {
                 log.debug(
-                    "Mutex lock received an event. Event-type: {}. Latest version: {} ",
+                    "Mutex lock received an event. Event-type: {}. Latest version: {} Lock Data: {}",
                     event.getType(),
-                    event.getNewNode().map(Resource::getVersion).orElse(-1L));
+                    event.getNewNode().map(Resource::getVersion).orElse(-1L),
+                    event.getNewNode().map(Resource::getData).orElse(null));
               }
 
               if (Objects.requireNonNull(event.getType())
@@ -79,6 +88,12 @@ public class DefaultMutexLock extends Lock {
 
                   // Reset the latest value because of delete operation.
                   advancingLatestVersion(0L);
+
+                  if (log.isDebugEnabled()) {
+                    log.debug(
+                        "Mutex lock has waiters in queue : {} ",
+                        localLock.hasWaiters(remoteLockAvailable));
+                  }
 
                   // Wake up one waiting thread to re-compete for the lock.
                   remoteLockAvailable.signal();
@@ -189,16 +204,22 @@ public class DefaultMutexLock extends Lock {
       return;
     }
 
-    final boolean timed = (unit != null);
-    long remainingNanos = timed ? unit.toNanos(time) : 0;
+    if (time == 0L)
+      throw new TimeoutException(
+          "Lock acquisition command timed out during server-side execution.");
+
+    final boolean timed = (unit != null && time > 0L);
+    long start = System.nanoTime(), clockTimeout = timed ? unit.toNanos(time) : -1L;
 
     String holderId = ThreadUtils.getCurrentThreadId();
-    var acquireCommand = new LockCommand.Acquire(holderId, leaseId, -1, TimeUnit.MILLISECONDS);
 
     LockCommand.AcquireResult result;
     Retry:
     for (; ; ) {
+      long remainingNanos = timed ? (clockTimeout - (System.nanoTime() - start)) : -1L;
       try {
+        var acquireCommand =
+            new LockCommand.Acquire(holderId, leaseId, remainingNanos, TimeUnit.NANOSECONDS);
         result = coordination.execute(resourceId, acquireCommand);
 
         // Acquisition success.
@@ -207,11 +228,8 @@ public class DefaultMutexLock extends Lock {
           return;
         }
 
-        // Acquisition failed because an unexpected error.
-        // Which will be retrying if latest-version is negatived.
-        if (result.serverLogicalLatestVersion() < 0 || clientLogicalLockVersion == 0L) {
-          continue Retry;
-        }
+        remainingNanos = timed ? (clockTimeout - (System.nanoTime() - start)) : -1L;
+
       } catch (AtomaException e) {
         // Check if the exception or its cause is a server-side operation timeout.
         Throwable cause = e;
@@ -233,21 +251,24 @@ public class DefaultMutexLock extends Lock {
 
       localLock.lock();
       try {
+        if ((result.serverLogicalLatestVersion() < clientLogicalLockVersion
+                && clientLogicalLockVersion > 0L)
+            || clientLogicalLockVersion == 0L) {
+          continue Retry;
+        }
+
         isRemoteLockHeld = true;
         while (isRemoteLockHeld) {
           if (timed) {
             if (remainingNanos <= 0) {
               throw new TimeoutException("Unable to acquire lock within the specified time.");
             }
-            long start = System.nanoTime();
             if (!remoteLockAvailable.await(remainingNanos, TimeUnit.NANOSECONDS)) {
               throw new TimeoutException("Unable to acquire lock within the specified time.");
             }
             remainingNanos -= (System.nanoTime() - start);
           } else {
-            if (result.serverLogicalLatestVersion() >= this.clientLogicalLockVersion)
-              remoteLockAvailable.await();
-            else continue Retry;
+            remoteLockAvailable.await();
           }
         }
       } finally {

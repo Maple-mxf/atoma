@@ -25,10 +25,10 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
 import static atoma.storage.mongo.command.MongoErrorCode.DUPLICATE_KEY;
 import static atoma.storage.mongo.command.MongoErrorCode.WRITE_CONFLICT;
+import static com.mongodb.client.model.Aggregates.replaceRoot;
 import static com.mongodb.client.model.Filters.eq;
 import static java.util.Collections.singletonList;
 
@@ -95,8 +95,7 @@ public class RLAcquireCommandHandler
   private List<Bson> buildAggregationPipeline(Document owner) {
     List<Document> ownerDocArray = singletonList(owner);
     return List.of(
-        new Document(
-            "$replaceRoot",
+        replaceRoot(
             new Document(
                 "newRoot",
                 new Document(
@@ -195,12 +194,13 @@ public class RLAcquireCommandHandler
         getCollection(context, AtomaCollectionNamespace.RW_LOCK_NAMESPACE);
 
     var owner = new Document("holder", command.holderId()).append("lease", command.leaseId());
+    List<Bson> pipeline = this.buildAggregationPipeline(owner);
+
     Function<ClientSession, LockCommand.AcquireResult> cmdBlock =
         session -> {
 
           // 1. Attempt lock acquisition
           // Return a duplicate-key exception because of does not match the condition.
-          List<Bson> pipeline = this.buildAggregationPipeline(owner);
 
           Document lockDoc =
               collection.findOneAndUpdate(
@@ -232,6 +232,7 @@ public class RLAcquireCommandHandler
     Result<LockCommand.AcquireResult> result =
         this.newCommandExecutor(client)
             .withoutTxn()
+            .withoutCausallyConsistent()
             .retryOnCode(WRITE_CONFLICT)
             .retryOnCode(DUPLICATE_KEY)
             .withTimeout(Duration.of(command.timeout(), command.timeUnit().toChronoUnit()))

@@ -8,12 +8,9 @@ import atoma.api.coordination.command.HandlesCommand;
 import atoma.api.coordination.command.LockCommand;
 import atoma.api.coordination.command.ReadWriteLockCommand;
 import atoma.storage.mongo.command.AtomaCollectionNamespace;
-import atoma.storage.mongo.command.CommandFailureException;
 import atoma.storage.mongo.command.MongoCommandHandler;
 import atoma.storage.mongo.command.MongoCommandHandlerContext;
-import atoma.storage.mongo.command.MongoErrorCode;
 import com.google.auto.service.AutoService;
-import com.mongodb.MongoCommandException;
 import com.mongodb.client.ClientSession;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
@@ -27,13 +24,12 @@ import org.bson.conversions.Bson;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Optional;
 import java.util.function.Function;
 
 import static atoma.storage.mongo.command.MongoErrorCode.DUPLICATE_KEY;
 import static atoma.storage.mongo.command.MongoErrorCode.WRITE_CONFLICT;
-import static com.mongodb.client.model.Filters.*;
-import static com.mongodb.client.model.Updates.*;
+import static com.mongodb.client.model.Aggregates.replaceRoot;
+import static com.mongodb.client.model.Filters.eq;
 
 /**
  * Handles the {@link ReadWriteLockCommand.AcquireWrite} command to acquire a distributed, exclusive
@@ -94,8 +90,7 @@ public class WLAcquireCommandHandler
     extends MongoCommandHandler<ReadWriteLockCommand.AcquireWrite, LockCommand.AcquireResult> {
   private List<Bson> buildAggregationPipeline(Document owner) {
     return List.of(
-        new Document(
-            "$replaceRoot",
+        replaceRoot(
             new Document(
                 "newRoot",
                 new Document(
@@ -188,11 +183,11 @@ public class WLAcquireCommandHandler
         getCollection(context, AtomaCollectionNamespace.RW_LOCK_NAMESPACE);
 
     var owner = new Document("holder", command.holderId()).append("lease", command.leaseId());
+    List<Bson> pipeline = this.buildAggregationPipeline(owner);
     Function<ClientSession, LockCommand.AcquireResult> cmdBlock =
         session -> {
           // 1. Attempt lock acquisition
           // Return a duplicate-key exception because of does not match the condition.
-          List<Bson> pipeline = this.buildAggregationPipeline(owner);
           Document lockDoc =
               collection.findOneAndUpdate(
                   eq("_id", context.getResourceId()),
@@ -226,6 +221,7 @@ public class WLAcquireCommandHandler
     Result<LockCommand.AcquireResult> result =
         this.newCommandExecutor(client)
             .withoutTxn()
+            .withoutCausallyConsistent()
             .retryOnCode(WRITE_CONFLICT)
             .retryOnCode(DUPLICATE_KEY)
             .withTimeout(Duration.of(command.timeout(), command.timeUnit().toChronoUnit()))

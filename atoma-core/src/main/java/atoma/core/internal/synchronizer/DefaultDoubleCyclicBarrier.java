@@ -6,11 +6,15 @@ import atoma.api.coordination.Subscription;
 import atoma.api.coordination.command.DoubleCyclicBarrierCommand;
 import atoma.api.synchronizer.DoubleCyclicBarrier;
 import atoma.core.internal.ThreadUtils;
+import com.google.common.annotations.Beta;
+import com.google.errorprone.annotations.MustBeClosed;
+import com.google.errorprone.annotations.ThreadSafe;
 
-import java.util.Map;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
+@Beta
+@ThreadSafe
 public class DefaultDoubleCyclicBarrier extends DoubleCyclicBarrier {
 
   private final String resourceId;
@@ -23,6 +27,7 @@ public class DefaultDoubleCyclicBarrier extends DoubleCyclicBarrier {
   private final Condition enterCondition = localLock.newCondition();
   private final Condition leaveCondition = localLock.newCondition();
 
+  @MustBeClosed
   public DefaultDoubleCyclicBarrier(
       String resourceId, String leaseId, int parties, CoordinationStore coordination) {
     this.resourceId = resourceId;

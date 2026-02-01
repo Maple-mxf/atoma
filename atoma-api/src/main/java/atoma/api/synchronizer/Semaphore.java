@@ -1,44 +1,78 @@
 package atoma.api.synchronizer;
 
 import atoma.api.Leasable;
+import atoma.api.OperationTimeoutException;
 
 import java.util.concurrent.TimeUnit;
 
 /**
- * 信号量维护一个整数计数值，这个值表示可用资源的数量或许可证数。
+ * A distributed counting semaphore.
  *
- * <p>信号量支持两个基本操作
+ * <p>Conceptually, a semaphore maintains a set of permits. The {@link #acquire(int)} method
+ * blocks if necessary until enough permits are available, and then takes them. The {@link
+ * #release(int)} method adds permits, potentially releasing a blocking acquirer.
  *
- * <ul>
- *   <li>
- *       <p>P（Proberen） 或 acquire()（减操作）
- *       <ul>
- *         <li>线程请求一个许可证（即，尝试获取资源）。
- *         <li>如果信号量的计数大于 0，线程可以成功获取一个许可证，信号量的计数减 1。
- *         <li>如果信号量的计数为 0，线程将被阻塞，直到有其他线程释放一个许可证。
- *       </ul>
- *   <li>
- *       <p>V（Verhogen） 或 release()（加操作）：
- *       <ul>
- *         <li>线程释放一个许可证（即，释放资源）
- *         <li>信号量的计数加 1，表示一个资源变得可用
- *         <li>如果有其他线程在等待许可证，则被唤醒并允许继续执行
- *       </ul>
- * </ul>
+ * <p>This is an abstract class for a distributed implementation, meaning the state of the semaphore
+ * is managed consistently across multiple clients or services.
  *
- * <p>信号量内部会维护一个队列存储等待的线程信息存储阻塞等待的线程信息
+ * @see java.util.concurrent.Semaphore
  */
 public abstract class Semaphore extends Leasable {
 
+  /**
+   * Acquires the given number of permits from this semaphore, blocking until all are available.
+   *
+   * @param permits the number of permits to acquire (must be positive)
+   * @throws InterruptedException if the current thread is interrupted while waiting
+   * @throws IllegalArgumentException if {@code permits} is not a positive number
+   */
   public abstract void acquire(int permits) throws InterruptedException;
 
+  /**
+   * Acquires the given number of permits from this semaphore, blocking until all are available or
+   * the specified waiting time elapses.
+   *
+   * @param permits the number of permits to acquire (must be positive)
+   * @param waitTime the maximum time to wait for the permits
+   * @param timeUnit the time unit of the {@code waitTime} argument
+   * @throws InterruptedException if the current thread is interrupted while waiting
+   * @throws OperationTimeoutException if the waiting time elapses before the permits can be acquired
+   * @throws IllegalArgumentException if {@code permits} is not a positive number
+   */
   public abstract void acquire(int permits, Long waitTime, TimeUnit timeUnit)
       throws InterruptedException;
 
+  /**
+   * Releases the given number of permits, returning them to the semaphore.
+   *
+   * <p>This may result in a waiting thread being unblocked.
+   *
+   * @param permits the number of permits to release (must be positive)
+   * @throws IllegalArgumentException if {@code permits} is not a positive number
+   */
   public abstract void release(int permits);
 
   /**
-   * @return 返回初始化的许可数量
+   * Returns the initial number of permits this semaphore was created with.
+   *
+   * @return the initial number of permits
    */
   public abstract int getPermits();
+
+  /**
+   * Acquires and returns all permits that are immediately available in a non-blocking manner.
+   *
+   * @return the number of permits drained
+   */
+  public abstract int drainPermits();
+
+  /**
+   * Returns the current number of permits available in this semaphore.
+   *
+   * <p>This value is typically used for monitoring and debugging purposes. In a distributed system,
+   * this may be an estimate, as the value could change immediately after being read.
+   *
+   * @return the number of permits available
+   */
+  public abstract int availablePermits();
 }

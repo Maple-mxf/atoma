@@ -7,6 +7,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import atoma.client.AtomaClient;
 import atoma.test.BaseTest;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.DisplayName;
@@ -16,7 +17,7 @@ public class MultiClientLockCompetitionTest extends BaseTest {
 
   @Test
   @DisplayName("TC-02: 多客户端竞争，只有一个能成功获取锁")
-  void testMultiClientLockCompetition() throws InterruptedException {
+  void testMultiClientLockCompetition() throws Exception {
     String resourceId = "test-resource-tc02";
     int clientCount = 5;
     CountDownLatch startLatch = new CountDownLatch(1);
@@ -30,6 +31,8 @@ public class MultiClientLockCompetitionTest extends BaseTest {
     // 线程池来管理客户端
     ExecutorService executor = Executors.newFixedThreadPool(clientCount);
 
+    AtomaClient client = new AtomaClient(newMongoCoordinationStore());
+
     for (int i = 0; i < clientCount; i++) {
       final int clientId = i;
       executor.submit(
@@ -37,7 +40,7 @@ public class MultiClientLockCompetitionTest extends BaseTest {
             try {
               startLatch.await();
 
-              Lease lease = this.atomaClient.grantLease(Duration.ofSeconds(30));
+              Lease lease = client.grantLease(Duration.ofSeconds(30));
               Lock lock = lease.getLock(resourceId);
               try {
                 // 尝试获取锁
@@ -96,14 +99,18 @@ public class MultiClientLockCompetitionTest extends BaseTest {
     System.out.println("尝试客户端数: " + clientCount);
     System.out.println("成功获取锁的客户端数: " + successCount.get());
     System.out.println("互斥锁是否被违反: " + mutexViolated.get());
+
+    client.close();
   }
 
   @Test
   @DisplayName("TC-02-增强版: 验证锁的严格互斥性")
-  void testStrictMutexProperty() throws InterruptedException {
+  void testStrictMutexProperty() throws Exception {
     String resourceId = "test-resource-tc02-strict";
     int rounds = 3; // 进行多轮测试
     int clientsPerRound = 3;
+
+    AtomaClient client = new AtomaClient(newMongoCoordinationStore());
 
     for (int round = 0; round < rounds; round++) {
       System.out.println("=== 第 " + (round + 1) + " 轮测试 ===");
@@ -123,7 +130,7 @@ public class MultiClientLockCompetitionTest extends BaseTest {
               try {
                 startLatch.await();
 
-                Lease lease = this.atomaClient.grantLease(Duration.ofSeconds(10));
+                Lease lease =  client.grantLease(Duration.ofSeconds(10));
                 Lock lock = lease.getLock(resourceId);
 
                 // 使用阻塞式锁获取
@@ -170,6 +177,8 @@ public class MultiClientLockCompetitionTest extends BaseTest {
       // 短暂等待再进行下一轮
       Thread.sleep(100);
     }
+
+    client.close();
 
     System.out.println("=== 所有轮次完成，锁的互斥性验证通过 ===");
   }

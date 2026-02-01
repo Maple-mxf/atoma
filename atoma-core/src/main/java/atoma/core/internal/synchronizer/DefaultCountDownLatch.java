@@ -1,13 +1,16 @@
 package atoma.core.internal.synchronizer;
 
 import atoma.api.coordination.CoordinationStore;
-import atoma.api.coordination.Resource;
 import atoma.api.coordination.ResourceChangeEvent;
 import atoma.api.coordination.Subscription;
 import atoma.api.coordination.command.CountDownLatchCommand;
 import atoma.api.synchronizer.CountDownLatch;
+import com.google.common.annotations.Beta;
+import com.google.errorprone.annotations.CheckReturnValue;
+import com.google.errorprone.annotations.MustBeClosed;
+import com.google.errorprone.annotations.ThreadSafe;
 
-import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -33,6 +36,8 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * @see atoma.api.synchronizer.CountDownLatch
  */
+@Beta
+@ThreadSafe
 public class DefaultCountDownLatch extends CountDownLatch {
 
   private final String resourceId;
@@ -54,7 +59,10 @@ public class DefaultCountDownLatch extends CountDownLatch {
    *     through {@link #await()}.
    * @param coordination The coordination store used to execute commands and listen for events.
    */
+  @MustBeClosed
   public DefaultCountDownLatch(String resourceId, int count, CoordinationStore coordination) {
+    if (count < 0) throw new IllegalArgumentException("count < 0");
+
     this.resourceId = resourceId;
     this.coordination = coordination;
 
@@ -78,9 +86,7 @@ public class DefaultCountDownLatch extends CountDownLatch {
                         .orElse(false);
               }
 
-              if (shouldSignal) {
-                signalAllWaiters();
-              }
+              if (shouldSignal) signalAllWaiters();
             });
   }
 
@@ -103,6 +109,41 @@ public class DefaultCountDownLatch extends CountDownLatch {
     coordination.execute(resourceId, new CountDownLatchCommand.CountDown());
   }
 
+  @CheckReturnValue
+  @Override
+  public boolean await(long timeout, TimeUnit unit) throws InterruptedException {
+    if (Thread.interrupted()) {
+      throw new InterruptedException();
+    }
+
+    // Optimistic check to avoid waiting if the latch is already open.
+    if (getCount() <= 0) return true;
+
+    if (timeout == 0L) return false;
+
+    final boolean timed = (unit != null && timeout > 0L);
+    long start = System.nanoTime(), clockTimeout = timed ? unit.toNanos(timeout) : -1L;
+    long remainingNanos = timed ? (clockTimeout - (System.nanoTime() - start)) : -1L;
+
+    localLock.lock();
+    try {
+      // Re-check state after acquiring lock to prevent race conditions.
+      while (getCount() > 0) {
+
+        if (timed) {
+          if (remainingNanos <= 0L) return false;
+          if (!latchZero.await(remainingNanos, TimeUnit.NANOSECONDS)) return false;
+          remainingNanos -= (System.nanoTime() - start);
+        } else {
+          latchZero.await();
+        }
+      }
+      return true;
+    } finally {
+      localLock.unlock();
+    }
+  }
+
   /**
    * Causes the current thread to wait until the latch has counted down to zero, unless the thread
    * is {@linkplain Thread#interrupt interrupted}.
@@ -111,24 +152,8 @@ public class DefaultCountDownLatch extends CountDownLatch {
    */
   @Override
   public void await() throws InterruptedException {
-    if (Thread.interrupted()) {
-      throw new InterruptedException();
-    }
-
-    // Optimistic check to avoid waiting if the latch is already open.
-    if (getCount() <= 0) {
-      return;
-    }
-
-    localLock.lock();
-    try {
-      // Re-check state after acquiring lock to prevent race conditions.
-      while (getCount() > 0) {
-        latchZero.await();
-      }
-    } finally {
-      localLock.unlock();
-    }
+    boolean elapsed = await(-1L, null);
+    if (!elapsed) throw new InterruptedException();
   }
 
   /**

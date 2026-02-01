@@ -73,7 +73,11 @@ public class ReleaseCommandHandler extends MongoCommandHandler<LockCommand.Relea
                   + "'");
         };
     Result<Void> result =
-        this.newCommandExecutor(client).withoutTxn().retryOnCode(WRITE_CONFLICT).execute(cmdBlock);
+        this.newCommandExecutor(client)
+            .withoutTxn()
+            .withoutCausallyConsistent()
+            .retryOnCode(WRITE_CONFLICT)
+            .execute(cmdBlock);
     try {
       return result.getOrThrow();
     } catch (Throwable e) {

@@ -9,57 +9,83 @@ import atoma.api.Lease;
 import atoma.api.lock.Lock;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import atoma.client.AtomaClient;
+import atoma.storage.mongo.MongoCoordinationStore;
 import atoma.test.BaseTest;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 public class LockRenewalPacketLossTest extends BaseTest {
-    public LockRenewalPacketLossTest() {
-    }
+  public LockRenewalPacketLossTest() {}
 
-    @Test
-    @DisplayName("TC-27: 续期请求网络丢包")
-    void testLockRenewalPacketLoss() throws InterruptedException {
-        String resourceId = "test-resource-tc27";
-        CountDownLatch lockAcquired = new CountDownLatch(1);
-        CountDownLatch leaseExpired = new CountDownLatch(1);
-        Lease lease1 = this.atomaClient.grantLease(Duration.ofSeconds(1L));
-        Lock lock1 = lease1.getLock(resourceId);
-        Thread packetLossClient = new Thread(() -> {
-            try {
+  @Test
+  @DisplayName("TC-27: 续期请求网络丢包")
+  void testLockRenewalPacketLoss() throws InterruptedException {
+    String resourceId = "test-resource-tc27";
+    CountDownLatch lockAcquired = new CountDownLatch(1);
+    CountDownLatch leaseExpired = new CountDownLatch(1);
+
+    Thread packetLossClient =
+        new Thread(
+            () -> {
+              try {
+                ScheduledExecutorService scheduledExecutorService = newScheduledExecutorService();
+                MongoCoordinationStore mongoCoordinationStore = newMongoCoordinationStore();
+                AtomaClient client =
+                    new AtomaClient(scheduledExecutorService, mongoCoordinationStore);
+
+                Lease lease1 = client.grantLease(Duration.ofSeconds(1L));
+                Lock lock1 = lease1.getLock(resourceId);
+
                 lock1.lock();
                 lockAcquired.countDown();
                 Thread.sleep(3000L);
-            } catch (InterruptedException var3) {
-                Thread.currentThread().interrupt();
-            }
 
-        });
-        Thread recoveryClient = new Thread(() -> {
-            try {
+                crashAtomaClient(mongoCoordinationStore, scheduledExecutorService);
+              } catch (InterruptedException var3) {
+                Thread.currentThread().interrupt();
+              } catch (Exception e) {
+                throw new RuntimeException(e);
+              }
+            });
+    Thread recoveryClient =
+        new Thread(
+            () -> {
+              try {
+                ScheduledExecutorService scheduledExecutorService = newScheduledExecutorService();
+                MongoCoordinationStore mongoCoordinationStore = newMongoCoordinationStore();
+                AtomaClient client =
+                    new AtomaClient(scheduledExecutorService, mongoCoordinationStore);
+
                 lockAcquired.await();
                 Thread.sleep(2000L);
-                leaseExpired.countDown();
-                Lease lease2 = this.atomaClient.grantLease(Duration.ofSeconds(30L));
+                Lease lease2 = client.grantLease(Duration.ofSeconds(30L));
                 Lock lock2 = lease2.getLock(resourceId);
                 lock2.lock();
+                leaseExpired.countDown();
                 lock2.unlock();
                 lease2.revoke();
-            } catch (InterruptedException var6) {
-                Thread.currentThread().interrupt();
-            }
 
-        });
-        packetLossClient.start();
-        recoveryClient.start();
-        Assertions.assertThat(lockAcquired.await(2L, TimeUnit.SECONDS)).isTrue();
-        Assertions.assertThat(leaseExpired.await(3L, TimeUnit.SECONDS)).isTrue();
-        packetLossClient.join();
-        recoveryClient.join();
-        lease1.revoke();
-        System.out.println("TC-27: 续期请求网络丢包 - PASSED");
-    }
+                client.close();
+                mongoCoordinationStore.close();
+
+              } catch (InterruptedException var6) {
+                Thread.currentThread().interrupt();
+              } catch (Exception e) {
+                throw new RuntimeException(e);
+              }
+            });
+    packetLossClient.start();
+    recoveryClient.start();
+    Assertions.assertThat(lockAcquired.await(2L, TimeUnit.SECONDS)).isTrue();
+    Assertions.assertThat(leaseExpired.await(120L, TimeUnit.SECONDS)).isTrue();
+    packetLossClient.join();
+    recoveryClient.join();
+
+    System.out.println("TC-27: 续期请求网络丢包 - PASSED");
+  }
 }

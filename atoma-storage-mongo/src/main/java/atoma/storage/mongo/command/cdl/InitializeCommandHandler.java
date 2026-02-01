@@ -5,7 +5,6 @@ import atoma.api.Result;
 import atoma.api.coordination.command.CommandHandler;
 import atoma.api.coordination.command.CountDownLatchCommand;
 import atoma.api.coordination.command.HandlesCommand;
-import atoma.storage.mongo.command.AtomaCollectionNamespace;
 import atoma.storage.mongo.command.MongoCommandHandler;
 import atoma.storage.mongo.command.MongoCommandHandlerContext;
 import com.google.auto.service.AutoService;
@@ -17,6 +16,8 @@ import org.bson.Document;
 
 import java.util.function.Function;
 
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.COUNTDOWN_LATCH_NAMESPACE;
+import static atoma.storage.mongo.command.MongoErrorCode.WRITE_CONFLICT;
 import static com.mongodb.client.model.Filters.eq;
 import static com.mongodb.client.model.Updates.setOnInsert;
 
@@ -33,7 +34,8 @@ import static com.mongodb.client.model.Updates.setOnInsert;
  * <pre>{@code
  * {
  *   "_id": "latch-resource-id",
- *   "count": 3
+ *   "count": 3,
+ *   "_update_flag:": true
  * }
  * }</pre>
  */
@@ -55,8 +57,7 @@ public class InitializeCommandHandler
   public Void execute(
       CountDownLatchCommand.Initialize command, MongoCommandHandlerContext context) {
     MongoClient client = context.getClient();
-    MongoCollection<Document> collection =
-        getCollection(context, AtomaCollectionNamespace.COUNTDOWN_LATCH_NAMESPACE);
+    MongoCollection<Document> collection = getCollection(context, COUNTDOWN_LATCH_NAMESPACE);
 
     Function<ClientSession, Void> cmdBlock =
         session -> {
@@ -67,7 +68,12 @@ public class InitializeCommandHandler
           return null;
         };
 
-    Result<Void> result = this.newCommandExecutor(client).withoutTxn().execute(cmdBlock);
+    Result<Void> result =
+        this.newCommandExecutor(client)
+            .withoutTxn()
+            .withoutCausallyConsistent()
+            .retryOnCode(WRITE_CONFLICT)
+            .execute(cmdBlock);
     try {
       return result.getOrThrow();
     } catch (Throwable e) {

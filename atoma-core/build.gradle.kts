@@ -33,29 +33,23 @@ dependencies {
     testImplementation("org.mockito:mockito-junit-jupiter:5.11.0")
 }
 
-tasks.javadoc {
-    // 配置 Javadoc 的选项
+tasks.withType<Javadoc> {
     options {
-        // 启用作者和版本信息
-        version = true
-
-        // 设置 Javadoc 的编码方式（如果你的源代码包含非英文字符）
+        this as StandardJavadocDocletOptions
         encoding = "UTF-8"
+        links("https://docs.oracle.com/javase/8/docs/api/")
+        if (JavaVersion.current().isJava9Compatible) {
+            addBooleanOption("html5", true)
+        }
+        tags = listOf(
+            "apiNote:a:API Note:", "implSpec:a:Implementation Requirements:", "implNote:a:Implementation Note:"
+        )
     }
+
+    title = "Atoma Project API Documentation"
 }
 
 tasks.withType<JavaCompile>().configureEach {
-
     options.errorprone.disableWarningsInGeneratedCode.set(true)
-
     options.errorprone.disableAllChecks = true
-
-}
-
-
-
-tasks.test {
-
-    useJUnitPlatform()
-
 }

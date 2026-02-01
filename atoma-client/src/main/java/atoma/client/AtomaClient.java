@@ -15,6 +15,7 @@ import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.Table;
 import com.google.common.collect.Tables;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import com.google.errorprone.annotations.MustBeClosed;
 
 import java.time.Duration;
 import java.util.concurrent.Executors;
@@ -22,21 +23,34 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class AtomaClient implements AutoCloseable {
-
+  private final boolean ownExecutor;
   private final CoordinationStore coordinationStore;
 
   private final Table<Class<? extends Resourceful>, String, Resourceful> atomaResources =
       Tables.synchronizedTable(HashBasedTable.create());
 
-  private final ScheduledExecutorService scheduleExecutor =
-      Executors.newScheduledThreadPool(
-          8, new ThreadFactoryBuilder().setNameFormat("atoma-ttl-worker-%d").build());
+  private final ScheduledExecutorService scheduleExecutor;
 
+  @MustBeClosed
   public AtomaClient(CoordinationStore coordinationStore) {
     this.coordinationStore = coordinationStore;
+    this.scheduleExecutor =
+        Executors.newScheduledThreadPool(
+            8, new ThreadFactoryBuilder().setNameFormat("atoma-ttl-worker-%d").build());
+    this.ownExecutor = true;
+    startTTLTask();
+  }
+
+  public AtomaClient(ScheduledExecutorService ttlExecutor, CoordinationStore coordinationStore) {
+    this.coordinationStore = coordinationStore;
+    this.scheduleExecutor = ttlExecutor;
+    this.ownExecutor = false;
+    startTTLTask();
+  }
+
+  private void startTTLTask() {
     CleanDeadResourceCommand.Clean cleanCommand = new CleanDeadResourceCommand.Clean(null);
     coordinationStore.execute("", cleanCommand);
-
     scheduleExecutor.scheduleAtFixedRate(
         () -> {
           try {
@@ -47,18 +61,6 @@ public class AtomaClient implements AutoCloseable {
         0,
         2,
         TimeUnit.SECONDS);
-    Runtime.getRuntime()
-        .addShutdownHook(
-            new Thread(
-                () -> {
-                  for (Resourceful resourceful : atomaResources.values()) {
-                    try {
-                      resourceful.close();
-                    } catch (Exception e) {
-                      // e.printStackTrace();
-                    }
-                  }
-                }));
   }
 
   public Lease grantLease(Duration ttl) {
@@ -72,9 +74,8 @@ public class AtomaClient implements AutoCloseable {
                   (DefaultLease) atomaResources.remove(Lease.class, t.getResourceId());
 
               if (removedLease != null) {
-                CleanDeadResourceCommand.Clean cleanCommand = new CleanDeadResourceCommand.Clean(
-                        removedLease.getResourceId()
-                );
+                CleanDeadResourceCommand.Clean cleanCommand =
+                    new CleanDeadResourceCommand.Clean(removedLease.getResourceId());
                 coordinationStore.execute("", cleanCommand);
               }
             });
@@ -82,6 +83,7 @@ public class AtomaClient implements AutoCloseable {
     return lease;
   }
 
+  @MustBeClosed
   public CountDownLatch getCountDownLatch(String resourceId, int count) {
     CountDownLatch countDownLatch =
         (CountDownLatch) atomaResources.get(CountDownLatch.class, resourceId);
@@ -117,8 +119,9 @@ public class AtomaClient implements AutoCloseable {
 
   @Override
   public synchronized void close() throws Exception {
-    coordinationStore.close();
-    scheduleExecutor.shutdown();
+    if (ownExecutor) {
+      scheduleExecutor.shutdown();
+    }
 
     // Avoid ConcurrentModifyException
     HashBasedTable<Class<? extends Resourceful>, String, Resourceful> atomaResoucesCopier =

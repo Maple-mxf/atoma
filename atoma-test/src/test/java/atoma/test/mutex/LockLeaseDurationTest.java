@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import atoma.client.AtomaClient;
 import atoma.test.BaseTest;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.DisplayName;
@@ -23,16 +24,17 @@ public class LockLeaseDurationTest extends BaseTest {
 
     @Test
     @DisplayName("TC-04: 获取锁时指定不同的租约时长")
-    void testLockWithDifferentLeaseDurations() throws InterruptedException {
+    void testLockWithDifferentLeaseDurations() throws Exception {
         this.testLeaseDuration(Duration.ofSeconds(1L), "short-lease");
         this.testLeaseDuration(Duration.ofSeconds(5L), "medium-lease");
         this.testLeaseDuration(Duration.ofSeconds(10L), "long-lease");
         System.out.println("TC-04: 获取锁时指定不同的租约时长 - PASSED");
     }
 
-    private void testLeaseDuration(Duration leaseDuration, String resourceSuffix) throws InterruptedException {
+    private void testLeaseDuration(Duration leaseDuration, String resourceSuffix) throws Exception {
         String resourceId = "test-resource-tc04-" + resourceSuffix;
-        Lease lease = this.atomaClient.grantLease(leaseDuration);
+        AtomaClient client = new AtomaClient(newMongoCoordinationStore());
+        Lease lease = client.grantLease(leaseDuration);
         Lock lock = lease.getLock(resourceId);
         Assertions.assertThat(lease.getTtlDuration()).isEqualTo(leaseDuration);
         CountDownLatch latch = new CountDownLatch(1);
@@ -50,5 +52,6 @@ public class LockLeaseDurationTest extends BaseTest {
         Assertions.assertThat(latch.await(3L, TimeUnit.SECONDS)).isTrue();
         testThread.join();
         lease.revoke();
+        client.close();
     }
 }

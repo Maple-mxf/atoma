@@ -20,7 +20,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.function.Function;
 
@@ -107,7 +106,9 @@ public class CleanDeadResourceCommandHandler
     final List<Bson> pipeline =
         Arrays.asList(
             lookup(LEASE_NAMESPACE, "lease", "_id", "lease_doc"),
-            match(eq("lease_doc", emptyList())),
+            match(
+                new Document(
+                    "$expr", new Document("$eq", List.of(new Document("$size", "$lease_doc"), 0)))),
             project(fields(include("_id", "lease"))));
 
     List<DeleteOneModel<Document>> deleteOneModelList =
@@ -133,7 +134,7 @@ public class CleanDeadResourceCommandHandler
    * if its lease is dead. It then deletes any read-write lock documents that have become empty.
    *
    * @param context the command handler context
-   * @param command
+   * @param command the clean command
    */
   private void cleanReadWriteLocks(
       MongoCommandHandlerContext context, CleanDeadResourceCommand.Clean command) {
@@ -183,7 +184,6 @@ public class CleanDeadResourceCommandHandler
       if (writeLock != null && deadLeases.contains(writeLock.getString("lease"))) {
         updates.add(unset("write_lock"));
       }
-
       UpdateResult updateResult = collection.updateOne(eq("_id", doc.get("_id")), combine(updates));
     }
 
@@ -204,7 +204,7 @@ public class CleanDeadResourceCommandHandler
    * lease entries from the {@code leases} map.
    *
    * @param context the command handler context
-   * @param command
+   * @param command the clean command
    */
   private void cleanSemaphores(
       MongoCommandHandlerContext context, CleanDeadResourceCommand.Clean command) {

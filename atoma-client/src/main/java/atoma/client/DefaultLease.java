@@ -13,6 +13,9 @@ import atoma.core.internal.lock.DefaultMutexLock;
 import atoma.core.internal.lock.DefaultReadWriteLock;
 import atoma.core.internal.synchronizer.DefaultSemaphore;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.errorprone.annotations.MustBeClosed;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -27,6 +30,8 @@ import java.util.function.Consumer;
 /** The default implementation for lease. */
 public class DefaultLease extends Lease {
 
+  private final Logger log = LoggerFactory.getLogger(DefaultLease.class);
+
   private final CoordinationStore coordinationStore;
   private final String id;
 
@@ -40,6 +45,7 @@ public class DefaultLease extends Lease {
 
   private final Consumer<Lease> onRevokeListener;
 
+  @MustBeClosed
   DefaultLease(
       ScheduledExecutorService executor,
       CoordinationStore coordinationStore,
@@ -61,13 +67,24 @@ public class DefaultLease extends Lease {
         executor.scheduleAtFixedRate(
             () -> {
               try {
-                System.out.printf("Lease %s starting renew %n", this.id);
+
+                Instant preExpireTime = nextExpireTime;
 
                 LeaseCommand.TimeToLive ttlCmd =
                     new LeaseCommand.TimeToLive(
-                        id, nextExpireTime.plusMillis(ttlDuration.toMillis()));
+                        id, preExpireTime.plusMillis(ttlDuration.toMillis()));
                 LeaseCommand.TimeToLiveResult ttlResult = coordinationStore.execute(id, ttlCmd);
+
+                if (log.isDebugEnabled()) {
+                  log.debug(
+                      "Lease [{}] renew completed. Previous expire time: {} Next expire time: {} ",
+                      id,
+                      preExpireTime,
+                      ttlResult.nextExpireTime());
+                }
+
                 nextExpireTime = ttlResult.nextExpireTime();
+
               } catch (Exception e) {
                 e.printStackTrace();
               }

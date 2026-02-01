@@ -5,7 +5,6 @@ import atoma.api.IllegalOwnershipException;
 import atoma.api.Result;
 import atoma.api.coordination.command.CommandHandler;
 import atoma.api.coordination.command.HandlesCommand;
-import atoma.api.coordination.command.LockCommand;
 import atoma.api.coordination.command.ReadWriteLockCommand;
 import atoma.storage.mongo.command.AtomaCollectionNamespace;
 import atoma.storage.mongo.command.CommandFailureException;
@@ -19,12 +18,15 @@ import com.mongodb.client.model.FindOneAndUpdateOptions;
 import com.mongodb.client.model.ReturnDocument;
 import org.bson.Document;
 
-import java.util.List;
 import java.util.function.Function;
 
 import static atoma.storage.mongo.command.MongoErrorCode.WRITE_CONFLICT;
-import static com.mongodb.client.model.Filters.*;
-import static com.mongodb.client.model.Updates.*;
+import static com.mongodb.client.model.Filters.and;
+import static com.mongodb.client.model.Filters.elemMatch;
+import static com.mongodb.client.model.Filters.eq;
+import static com.mongodb.client.model.Updates.combine;
+import static com.mongodb.client.model.Updates.inc;
+import static com.mongodb.client.model.Updates.pull;
 
 /**
  * Handles the {@link ReadWriteLockCommand.ReleaseRead} command to release a distributed, shared
@@ -100,6 +102,7 @@ public class RLReleaseCommandHandler
     Result<Void> result =
         this.newCommandExecutor(client)
             .withoutTxn()
+            .withoutCausallyConsistent()
             .retryOnException(CommandFailureException.class)
             .retryOnCode(WRITE_CONFLICT)
             .execute(cmdBlock);

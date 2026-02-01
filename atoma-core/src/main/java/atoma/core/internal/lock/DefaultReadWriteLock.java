@@ -11,6 +11,10 @@ import atoma.api.coordination.command.ReadWriteLockCommand;
 import atoma.api.lock.Lock;
 import atoma.api.lock.ReadWriteLock;
 import atoma.core.internal.ThreadUtils;
+import com.google.common.annotations.Beta;
+import com.google.errorprone.annotations.MustBeClosed;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 
 import java.util.List;
 import java.util.Map;
@@ -52,6 +56,8 @@ import java.util.concurrent.locks.ReentrantLock;
  * @see atoma.core.internal.lock.DefaultReadWriteLock.AbstractLock
  * @see atoma.api.lock.ReadWriteLock
  */
+@Beta
+@ThreadSafe
 public class DefaultReadWriteLock extends ReadWriteLock {
 
   // --- Shared State for both Read and Write Locks ---
@@ -69,7 +75,17 @@ public class DefaultReadWriteLock extends ReadWriteLock {
   private final WriteLockImpl writeLock;
 
   // The logical-lock-version represents lock-data's latest version.
+  @GuardedBy("localLock")
   private volatile long clientLogicalLockVersion = 0L;
+
+  // The value of state that represent read-write lock's state.
+  // The value is 0 if the read-write lock can try read-lock or write lock.
+  // The value is 1 if the lock acquired by read thread.
+  // The value is 2 if the lock acquired by write thread.
+  private volatile int state;
+  private static final int STATE_AVAILABLE_RW = 0;
+  private static final int STATE_AVAILABLE_R = 1;
+  private static final int STATE_UNAVAILABLE_RW = 2;
 
   /**
    * Advancing the latest version
@@ -115,6 +131,7 @@ public class DefaultReadWriteLock extends ReadWriteLock {
    * @param leaseId The lease ID of the client session.
    * @param coordination The coordination store used to execute commands and listen for events.
    */
+  @MustBeClosed
   public DefaultReadWriteLock(String resourceId, String leaseId, CoordinationStore coordination) {
     this.resourceId = resourceId;
     this.leaseId = leaseId;
@@ -123,14 +140,16 @@ public class DefaultReadWriteLock extends ReadWriteLock {
     this.readLock = new ReadLockImpl(this);
     this.writeLock = new WriteLockImpl(this);
 
+    this.state = STATE_AVAILABLE_RW;
+
     this.subscription =
         coordination.subscribe(
             ReadWriteLock.class,
             resourceId,
             event -> {
-              if (event.getType() == ResourceChangeEvent.EventType.DELETED)
+              if (event.getType() == ResourceChangeEvent.EventType.DELETED) {
                 advancingLatestVersion(0L);
-              else {
+              } else {
                 event.getNewNode().ifPresent(n -> advancingLatestVersion(n.getVersion()));
               }
 
@@ -154,6 +173,7 @@ public class DefaultReadWriteLock extends ReadWriteLock {
 
                 if (isNowFullyFree) {
                   localLock.lock();
+                  state = STATE_AVAILABLE_RW;
                   try {
                     if (localLock.hasWaiters(writerCondition)) {
                       writerCondition.signal();
@@ -164,23 +184,22 @@ public class DefaultReadWriteLock extends ReadWriteLock {
                     localLock.unlock();
                   }
                 } else {
-                  boolean wasWriteLocked =
-                      event
-                          .getOldNode()
-                          .map(n -> n.getData().get("write_lock") != null)
-                          .orElse(false);
                   boolean isWriteLocked =
                       event
                           .getNewNode()
                           .map(n -> n.getData().get("write_lock") != null)
                           .orElse(false);
-                  if (wasWriteLocked && !isWriteLocked) {
-                    localLock.lock();
-                    try {
+
+                  localLock.lock();
+                  try {
+                    if (!isWriteLocked) {
+                      state = STATE_AVAILABLE_R;
                       readerCondition.signalAll();
-                    } finally {
-                      localLock.unlock();
+                    } else {
+                      state = STATE_UNAVAILABLE_RW;
                     }
+                  } finally {
+                    localLock.unlock();
                   }
                 }
               }
@@ -235,6 +254,8 @@ public class DefaultReadWriteLock extends ReadWriteLock {
 
     protected abstract Condition getCondition();
 
+    protected abstract boolean lockAvailable();
+
     @Override
     public String getLeaseId() {
       return parent.leaseId;
@@ -282,8 +303,6 @@ public class DefaultReadWriteLock extends ReadWriteLock {
       }
     }
 
-    private void forceUnlock() {}
-
     @Override
     public void unlock() {
       Integer count = reentrancyCounter.get();
@@ -306,7 +325,7 @@ public class DefaultReadWriteLock extends ReadWriteLock {
 
     @Override
     public void close() {
-      forceUnlock();
+      parent.close();
     }
 
     /**
@@ -345,6 +364,9 @@ public class DefaultReadWriteLock extends ReadWriteLock {
         return;
       }
 
+      if (time == 0L)
+        throw new TimeoutException("Lock command timed out during server-side execution.");
+
       final boolean timed = (unit != null && time > 0L);
       long start = System.nanoTime(), clockTimeout = timed ? unit.toNanos(time) : -1L;
 
@@ -382,21 +404,25 @@ public class DefaultReadWriteLock extends ReadWriteLock {
 
         parent.localLock.lock();
         try {
-          // No need for a local state flag; we just wait for a signal and then re-try.
-          if (timed) {
-            if (remainingNanos <= 0) throw new TimeoutException("Wait time elapsed.");
 
-            if (result.serverLogicalLatestVersion() < parent.clientLogicalLockVersion)
-              continue Retry;
+          if ((result.serverLogicalLatestVersion() < parent.clientLogicalLockVersion
+                  && parent.clientLogicalLockVersion > 0)
+              || parent.clientLogicalLockVersion == 0L) {
+            continue Retry;
+          }
 
-            if (!condition.await(remainingNanos, TimeUnit.NANOSECONDS))
-              throw new TimeoutException("Wait time elapsed before signal.");
+          while (!this.lockAvailable()) {
+            // No need for a local state flag; we just wait for a signal and then re-try.
+            if (timed) {
+              if (remainingNanos <= 0) throw new TimeoutException("Wait time elapsed.");
 
-          } else {
-            if (result.serverLogicalLatestVersion() < parent.clientLogicalLockVersion)
-              continue Retry;
+              if (!condition.await(remainingNanos, TimeUnit.NANOSECONDS))
+                throw new TimeoutException("Wait time elapsed before signal.");
 
-            condition.await();
+              remainingNanos -= (System.nanoTime() - start);
+            } else {
+              condition.await();
+            }
           }
         } finally {
           parent.localLock.unlock();
@@ -410,6 +436,11 @@ public class DefaultReadWriteLock extends ReadWriteLock {
   private static class ReadLockImpl extends AbstractLock {
     private ReadLockImpl(DefaultReadWriteLock parent) {
       super(parent);
+    }
+
+    @Override
+    protected boolean lockAvailable() {
+      return parent.state == STATE_AVAILABLE_R || parent.state == STATE_AVAILABLE_RW;
     }
 
     @Override
@@ -437,6 +468,11 @@ public class DefaultReadWriteLock extends ReadWriteLock {
   private static class WriteLockImpl extends AbstractLock {
     private WriteLockImpl(DefaultReadWriteLock parent) {
       super(parent);
+    }
+
+    @Override
+    protected boolean lockAvailable() {
+      return parent.state == STATE_AVAILABLE_RW;
     }
 
     @Override

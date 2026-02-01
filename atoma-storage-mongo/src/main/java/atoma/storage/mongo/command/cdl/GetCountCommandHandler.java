@@ -5,7 +5,6 @@ import atoma.api.Result;
 import atoma.api.coordination.command.CommandHandler;
 import atoma.api.coordination.command.CountDownLatchCommand;
 import atoma.api.coordination.command.HandlesCommand;
-import atoma.storage.mongo.command.AtomaCollectionNamespace;
 import atoma.storage.mongo.command.MongoCommandHandler;
 import atoma.storage.mongo.command.MongoCommandHandlerContext;
 import com.google.auto.service.AutoService;
@@ -16,6 +15,7 @@ import org.bson.Document;
 
 import java.util.function.Function;
 
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.COUNTDOWN_LATCH_NAMESPACE;
 import static com.mongodb.client.model.Filters.eq;
 
 /**
@@ -30,7 +30,8 @@ import static com.mongodb.client.model.Filters.eq;
  * <pre>{@code
  * {
  *   "_id": "latch-resource-id",
- *   "count": 3
+ *   "count": 3,
+ *   "_update_flag:": true
  * }
  * }</pre>
  */
@@ -39,7 +40,7 @@ import static com.mongodb.client.model.Filters.eq;
 @AutoService({CommandHandler.class})
 public class GetCountCommandHandler
     extends MongoCommandHandler<
-            CountDownLatchCommand.GetCount, CountDownLatchCommand.GetCountResult> {
+        CountDownLatchCommand.GetCount, CountDownLatchCommand.GetCountResult> {
 
   /**
    * Executes the command to fetch the current count.
@@ -53,8 +54,7 @@ public class GetCountCommandHandler
   public CountDownLatchCommand.GetCountResult execute(
       CountDownLatchCommand.GetCount command, MongoCommandHandlerContext context) {
     MongoClient client = context.getClient();
-      MongoCollection<Document> collection =
-              getCollection(context, AtomaCollectionNamespace.COUNTDOWN_LATCH_NAMESPACE);
+    MongoCollection<Document> collection = getCollection(context, COUNTDOWN_LATCH_NAMESPACE);
 
     Function<ClientSession, CountDownLatchCommand.GetCountResult> cmdBlock =
         session -> {

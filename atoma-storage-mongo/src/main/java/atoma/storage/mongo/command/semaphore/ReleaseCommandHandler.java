@@ -5,7 +5,6 @@ import atoma.api.Result;
 import atoma.api.coordination.command.CommandHandler;
 import atoma.api.coordination.command.HandlesCommand;
 import atoma.api.coordination.command.SemaphoreCommand;
-import atoma.storage.mongo.command.AtomaCollectionNamespace;
 import atoma.storage.mongo.command.MongoCommandHandler;
 import atoma.storage.mongo.command.MongoCommandHandlerContext;
 import com.google.auto.service.AutoService;
@@ -13,10 +12,12 @@ import com.mongodb.client.ClientSession;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.FindOneAndUpdateOptions;
+import com.mongodb.client.model.ReturnDocument;
 import org.bson.Document;
 
 import java.util.function.Function;
 
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.SEMAPHORE_NAMESPACE;
 import static atoma.storage.mongo.command.MongoErrorCode.WRITE_CONFLICT;
 import static com.mongodb.client.model.Filters.and;
 import static com.mongodb.client.model.Filters.eq;
@@ -47,9 +48,11 @@ import static com.mongodb.client.model.Updates.inc;
  *   "leases": {
  *     "lease-abc": 3,
  *     "lease-xyz": 3
- *   }
+ *   },
+ *   "version": NumberLong(1),
+ *   "_update_flag:": true
  * }
- * }</pre>
+ * </pre>
  */
 @SuppressWarnings("rawtypes")
 @AutoService({CommandHandler.class})
@@ -70,15 +73,14 @@ public class ReleaseCommandHandler extends MongoCommandHandler<SemaphoreCommand.
   @Override
   public Void execute(SemaphoreCommand.Release command, MongoCommandHandlerContext context) {
     MongoClient client = context.getClient();
-    MongoCollection<Document> collection =
-        getCollection(context, AtomaCollectionNamespace.SEMAPHORE_NAMESPACE);
+    MongoCollection<Document> collection = getCollection(context, SEMAPHORE_NAMESPACE);
     final String leaseField = "leases." + command.leaseId();
 
     Function<ClientSession, Void> cmdBlock =
         session -> {
           // Atomically increase available permits and decrease the lease's held permits.
           // We add a condition to ensure a lease cannot release more permits than it holds.
-          Document updatedDoc =
+          Document semaphoreDoc =
               collection.findOneAndUpdate(
                   and(
                       eq("_id", context.getResourceId()),
@@ -87,9 +89,9 @@ public class ReleaseCommandHandler extends MongoCommandHandler<SemaphoreCommand.
                   combine(
                       inc("available_permits", command.permits()),
                       inc(leaseField, -command.permits())),
-                  new FindOneAndUpdateOptions().upsert(false));
+                  new FindOneAndUpdateOptions().returnDocument(ReturnDocument.AFTER).upsert(false));
 
-          if (updatedDoc != null) {
+          if (semaphoreDoc != null) {
             // Success, return nothing.
             return null;
           }
@@ -104,7 +106,11 @@ public class ReleaseCommandHandler extends MongoCommandHandler<SemaphoreCommand.
         };
 
     Result<Void> result =
-        this.newCommandExecutor(client).withoutTxn().retryOnCode(WRITE_CONFLICT).execute(cmdBlock);
+        this.newCommandExecutor(client)
+            .withoutTxn()
+            .withoutCausallyConsistent()
+            .retryOnCode(WRITE_CONFLICT)
+            .execute(cmdBlock);
 
     try {
       // If successful, returns null (Void). If it failed, throws the underlying exception.

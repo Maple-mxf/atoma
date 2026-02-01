@@ -1,9 +1,11 @@
 package atoma.test.rwlock;
 
 import atoma.api.Lease;
+import atoma.api.coordination.CoordinationStore;
 import atoma.api.lock.Lock;
 import atoma.api.lock.ReadWriteLock;
 import atoma.client.AtomaClient;
+import atoma.storage.mongo.MongoCoordinationStore;
 import atoma.test.BaseTest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -12,6 +14,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -30,8 +33,8 @@ public class ClientCrashRecoveryTest extends BaseTest {
     final String resourceId = "test-crash-cleanup-resource";
 
     // 创建第一个客户端并获取写锁
-
-    Lease lease1 = atomaClient.grantLease(Duration.ofSeconds(8));
+    AtomaClient client1 = new AtomaClient(newMongoCoordinationStore());
+    Lease lease1 = client1.grantLease(Duration.ofSeconds(8));
 
     ReadWriteLock readWriteLock1 = lease1.getReadWriteLock(resourceId);
     Lock writeLock1 = readWriteLock1.writeLock();
@@ -46,7 +49,7 @@ public class ClientCrashRecoveryTest extends BaseTest {
     Thread.sleep(3000);
 
     // 创建第二个客户端尝试获取同一个资源的锁
-    AtomaClient client2 = new AtomaClient(coordinationStore);
+    AtomaClient client2 = new AtomaClient(newMongoCoordinationStore());
     Lease lease2 = client2.grantLease(Duration.ofSeconds(8));
     ReadWriteLock readWriteLock2 = lease2.getReadWriteLock(resourceId);
     Lock writeLock2 = readWriteLock2.writeLock();
@@ -61,6 +64,7 @@ public class ClientCrashRecoveryTest extends BaseTest {
       client2.close();
     }
   }
+
   @DisplayName("TEST-ACQ-009: 验证客户端崩溃后锁能够被自动清理")
   @Test
   public void testAbnormalClientExit() throws Exception {
@@ -73,9 +77,14 @@ public class ClientCrashRecoveryTest extends BaseTest {
     Thread abnormalClient =
         new Thread(
             () -> {
+              ScheduledExecutorService scheduledExecutorService = newScheduledExecutorService();
+              CoordinationStore coordinationStore1 = newMongoCoordinationStore();
               try {
+                AtomaClient atomaClient1 =
+                    new AtomaClient(scheduledExecutorService, coordinationStore1);
 
-                Lease lease1 = atomaClient.grantLease(Duration.ofSeconds(8));
+                Lease lease1 = atomaClient1.grantLease(Duration.ofSeconds(1));
+
                 ReadWriteLock readWriteLock = lease1.getReadWriteLock(resourceId);
                 Lock readLock = readWriteLock.readLock();
 
@@ -84,8 +93,14 @@ public class ClientCrashRecoveryTest extends BaseTest {
 
                 // 模拟异常：抛出异常而不正常释放锁
                 throw new RuntimeException("Simulated abnormal exit");
+
               } catch (Exception e) {
-                // 异常被捕获，线程退出
+                e.printStackTrace();
+                try {
+                  crashAtomaClient(coordinationStore1, scheduledExecutorService);
+                } catch (Exception e2) {
+                  e2.printStackTrace();
+                }
                 abnormalExitCompleted.countDown();
               }
             });
@@ -95,11 +110,12 @@ public class ClientCrashRecoveryTest extends BaseTest {
     abnormalClient.join();
 
     // 等待系统处理异常退出
-    Thread.sleep(2000);
+    Thread.sleep(3000);
 
     // 创建新客户端验证锁已被释放
+    System.err.println("创建新客户端验证锁已被释放");
     AtomaClient newClient = new AtomaClient(coordinationStore);
-    Lease lease1 = newClient.grantLease(Duration.ofSeconds(8));
+    Lease lease1 = newClient.grantLease(Duration.ofSeconds(2));
     ReadWriteLock readWriteLock = lease1.getReadWriteLock(resourceId);
     Lock writeLock = readWriteLock.writeLock();
 
@@ -115,36 +131,31 @@ public class ClientCrashRecoveryTest extends BaseTest {
     assertThat(lockAcquired.get()).isTrue();
   }
 
+  @DisplayName("TEST-ACQ-009: 验证多个客户端崩溃后锁能够被自动清理")
   @Test
   public void testMultipleClientCrash() throws Exception {
     final int clientCount = 5;
     final String resourceId = "test-multi-crash-resource";
 
     CountDownLatch allCrashed = new CountDownLatch(clientCount);
-    CountDownLatch recoveryCheck = new CountDownLatch(1);
-
-    // 创建多个客户端并获取读锁
-    List<AtomaClient> clients = new ArrayList<>();
-    List<Lock> locks = new ArrayList<>();
 
     for (int i = 0; i < clientCount; i++) {
       final int clientId = i;
-      AtomaClient client = new AtomaClient(coordinationStore);
-      Lease lease1 = client.grantLease(Duration.ofSeconds(8));
-      ReadWriteLock readWriteLock = lease1.getReadWriteLock(resourceId);
-      Lock readLock = readWriteLock.readLock();
-
-      readLock.lock();
-      clients.add(client);
-      locks.add(readLock);
-
       // 创建线程模拟崩溃
       Thread crashThread =
           new Thread(
               () -> {
                 try {
+                  ScheduledExecutorService scheduledExecutorService = newScheduledExecutorService();
+                  MongoCoordinationStore mongoCoordinationStore = newMongoCoordinationStore();
+                  AtomaClient client =
+                      new AtomaClient(scheduledExecutorService, mongoCoordinationStore);
+                  Lease lease1 = client.grantLease(Duration.ofSeconds(1));
+                  ReadWriteLock readWriteLock = lease1.getReadWriteLock(resourceId);
+                  Lock readLock = readWriteLock.readLock();
+                  readLock.lock();
                   Thread.sleep(100 * clientId); // 错开崩溃时间
-                  clients.get(clientId).close();
+                  crashAtomaClient(mongoCoordinationStore, scheduledExecutorService);
                   allCrashed.countDown();
                 } catch (Exception e) {
                   e.printStackTrace();
@@ -160,8 +171,9 @@ public class ClientCrashRecoveryTest extends BaseTest {
     Thread.sleep(3000);
 
     // 创建新客户端尝试获取写锁
-    AtomaClient newClient = new AtomaClient(coordinationStore);
-    Lease lease1 = newClient.grantLease(Duration.ofSeconds(8));
+    AtomaClient newClient = new AtomaClient(newMongoCoordinationStore());
+    System.err.println("创建新客户端尝试获取写锁");
+    Lease lease1 = newClient.grantLease(Duration.ofSeconds(3));
     ReadWriteLock readWriteLock = lease1.getReadWriteLock(resourceId);
     Lock writeLock = readWriteLock.writeLock();
 
@@ -175,15 +187,24 @@ public class ClientCrashRecoveryTest extends BaseTest {
     }
   }
 
+  @DisplayName("TEST-ACQ-009: 验证多个客户端崩溃后锁能够被自动清理")
   @Test
   public void testClientCrashDuringLockAcquisition() throws Exception {
     final String resourceId = "test-crash-during-acquisition-resource";
 
     // 首先获取写锁
-    Lease lease1 = atomaClient.grantLease(Duration.ofSeconds(8));
+    MongoCoordinationStore mongoCoordinationStore = newMongoCoordinationStore();
+    ScheduledExecutorService scheduledExecutorService = newScheduledExecutorService();
+
+    AtomaClient atomaClient1 = new AtomaClient(scheduledExecutorService, mongoCoordinationStore);
+
+    Lease lease1 = atomaClient1.grantLease(Duration.ofSeconds(1));
     ReadWriteLock readWriteLock1 = lease1.getReadWriteLock(resourceId);
     Lock writeLock1 = readWriteLock1.writeLock();
     writeLock1.lock();
+
+    ReadWriteLock readWriteLock = lease1.getReadWriteLock(resourceId);
+    Lock readLock = readWriteLock.readLock();
 
     CountDownLatch acquisitionStarted = new CountDownLatch(1);
     CountDownLatch crashSimulated = new CountDownLatch(1);
@@ -194,9 +215,6 @@ public class ClientCrashRecoveryTest extends BaseTest {
             () -> {
               try {
 
-                ReadWriteLock readWriteLock = lease1.getReadWriteLock(resourceId);
-                Lock readLock = readWriteLock.readLock();
-
                 acquisitionStarted.countDown();
 
                 // 尝试获取读锁（会被阻塞）
@@ -204,6 +222,8 @@ public class ClientCrashRecoveryTest extends BaseTest {
 
                 // 如果获取成功，模拟崩溃
                 crashSimulated.await();
+
+                crashAtomaClient(mongoCoordinationStore, scheduledExecutorService);
 
               } catch (Exception e) {
                 // 预期行为
@@ -215,9 +235,6 @@ public class ClientCrashRecoveryTest extends BaseTest {
 
     // 等待一段时间让锁请求发出
     Thread.sleep(1000);
-
-    // 释放第一个写锁
-    writeLock1.unlock();
 
     // 等待获取线程获取锁
     Thread.sleep(1000);

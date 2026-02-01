@@ -8,6 +8,9 @@ import atoma.api.coordination.command.CyclicBarrierCommand;
 import atoma.api.BrokenBarrierException;
 import atoma.api.synchronizer.CyclicBarrier;
 import atoma.core.internal.ThreadUtils;
+import com.google.common.annotations.Beta;
+import com.google.errorprone.annotations.MustBeClosed;
+import com.google.errorprone.annotations.ThreadSafe;
 
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
@@ -59,6 +62,8 @@ import java.util.concurrent.locks.ReentrantLock;
  * @see atoma.api.synchronizer.CyclicBarrier
  * @see atoma.api.coordination.CoordinationStore
  */
+@Beta
+@ThreadSafe
 public class DefaultCyclicBarrier extends CyclicBarrier {
 
   private final String resourceId;
@@ -91,6 +96,7 @@ public class DefaultCyclicBarrier extends CyclicBarrier {
    * @throws IllegalArgumentException if a barrier with the same {@code resourceId} already exists
    *     but was initialized with a different number of parties.
    */
+  @MustBeClosed
   public DefaultCyclicBarrier(
       String resourceId, String leaseId, int parties, CoordinationStore coordination) {
     if (parties <= 0) {

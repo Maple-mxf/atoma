@@ -14,7 +14,7 @@ import atoma.api.coordination.command.CommandHandler;
 import atoma.api.coordination.command.HandlesCommand;
 import atoma.storage.mongo.command.CommandExecutor;
 import atoma.storage.mongo.command.MongoCommandHandlerContext;
-import atoma.storage.mongo.command.MongoErrorCode;
+import com.google.errorprone.annotations.MustBeClosed;
 import com.mongodb.client.ClientSession;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
@@ -39,7 +39,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
-import static atoma.storage.mongo.command.AtomaCollectionNamespace.*;
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.BARRIER_NAMESPACE;
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.COUNTDOWN_LATCH_NAMESPACE;
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.DOUBLE_BARRIER_NAMESPACE;
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.LEASE_NAMESPACE;
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.MUTEX_LOCK_NAMESPACE;
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.RW_LOCK_NAMESPACE;
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.SEMAPHORE_NAMESPACE;
+import static atoma.storage.mongo.command.CommandExecutor.READ_CONCERN;
+import static atoma.storage.mongo.command.CommandExecutor.WRITE_CONCERN;
 import static com.mongodb.client.model.Aggregates.match;
 import static com.mongodb.client.model.Filters.in;
 import static java.util.Collections.singletonList;
@@ -56,6 +64,7 @@ public class MongoCoordinationStore implements CoordinationStore {
   private final Map<String, List<ResourceListener>> listenerRegistry = new ConcurrentHashMap<>();
   private final Thread watcherThread;
 
+  @MustBeClosed
   public MongoCoordinationStore(MongoClient mongoClient, String db) {
     this.mongoClient = mongoClient;
     this.mongoDatabase = mongoClient.getDatabase(db);
@@ -94,14 +103,14 @@ public class MongoCoordinationStore implements CoordinationStore {
     MongoCollection<Document> collection =
         mongoDatabase
             .getCollection(LEASE_NAMESPACE)
-            .withReadConcern(CommandExecutor.READ_CONCERN)
-            .withWriteConcern(CommandExecutor.WRITE_CONCERN);
+            .withReadConcern(READ_CONCERN)
+            .withWriteConcern(WRITE_CONCERN);
 
     Function<ClientSession, Boolean> cmdBlock =
         session -> {
           Supplier<Boolean> indexFinder =
               () -> {
-                List<Document> documentList = new ArrayList<>(4);
+                List<Document> documentList = new ArrayList<>(2);
                 collection.listIndexes().into(documentList);
                 return documentList.stream()
                     .anyMatch(
@@ -112,7 +121,9 @@ public class MongoCoordinationStore implements CoordinationStore {
                         });
               };
 
-          if (indexFinder.get()) return true;
+          if (indexFinder.get()) {
+            return true;
+          }
           collection.createIndex(
               Indexes.ascending("expire_time"),
               new IndexOptions().expireAfter(8L, SECONDS).name("expire_time"));
@@ -120,11 +131,7 @@ public class MongoCoordinationStore implements CoordinationStore {
         };
 
     Result<Boolean> result =
-        new CommandExecutor<Boolean>(this.mongoClient)
-            .withoutTxn()
-            .retryOnResult(t -> !t)
-            .retryOnCode(MongoErrorCode.EXCEEDED_TIME_LIMIT)
-            .execute(cmdBlock);
+        new CommandExecutor<Boolean>(this.mongoClient).withoutTxn().execute(cmdBlock);
 
     try {
       if (result.isSuccess() && !result.getOrThrow()) {

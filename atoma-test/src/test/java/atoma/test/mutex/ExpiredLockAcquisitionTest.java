@@ -11,10 +11,12 @@ import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import atoma.client.AtomaClient;
 import atoma.test.BaseTest;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.testcontainers.shaded.org.checkerframework.checker.units.qual.C;
 
 public class ExpiredLockAcquisitionTest extends BaseTest {
     public ExpiredLockAcquisitionTest() {
@@ -22,9 +24,12 @@ public class ExpiredLockAcquisitionTest extends BaseTest {
 
     @Test
     @DisplayName("TC-03: 获取已过期锁（验证锁释放机制）")
-    void testExpiredLockAcquisition() throws InterruptedException {
+    void testExpiredLockAcquisition() throws Exception {
         String resourceId = "test-resource-tc03";
-        Lease lease1 = this.atomaClient.grantLease(Duration.ofSeconds(2L));
+
+        AtomaClient client = new AtomaClient(newMongoCoordinationStore());
+
+        Lease lease1 = client.grantLease(Duration.ofSeconds(2L));
         Lock lock1 = lease1.getLock(resourceId);
         CountDownLatch firstAcquired = new CountDownLatch(1);
         CountDownLatch secondAcquired = new CountDownLatch(1);
@@ -49,7 +54,7 @@ public class ExpiredLockAcquisitionTest extends BaseTest {
             try {
                 firstAcquired.await();
                 Thread.sleep(2500L);
-                Lease lease2 = this.atomaClient.grantLease(Duration.ofSeconds(30L));
+                Lease lease2 = client.grantLease(Duration.ofSeconds(30L));
                 Lock lock2 = lease2.getLock(resourceId);
                 lock2.lock();
                 secondAcquired.countDown();
@@ -66,6 +71,8 @@ public class ExpiredLockAcquisitionTest extends BaseTest {
         Assertions.assertThat(secondAcquired.await(5L, TimeUnit.SECONDS)).isTrue();
         firstThread.join();
         secondThread.join();
+
+        client.close();
         System.out.println("TC-03: 获取已过期锁（验证锁释放机制） - PASSED");
     }
 }

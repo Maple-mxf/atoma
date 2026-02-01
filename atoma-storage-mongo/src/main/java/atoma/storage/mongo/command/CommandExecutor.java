@@ -3,6 +3,7 @@ package atoma.storage.mongo.command;
 import atoma.api.AtomaStateException;
 import atoma.api.OperationTimeoutException;
 import atoma.api.Result;
+import com.google.errorprone.annotations.CheckReturnValue;
 import com.mongodb.ClientSessionOptions;
 import com.mongodb.MongoConfigurationException;
 import com.mongodb.MongoConnectionPoolClearedException;
@@ -27,23 +28,14 @@ import dev.failsafe.RetryPolicy;
 import dev.failsafe.RetryPolicyBuilder;
 import dev.failsafe.Timeout;
 import dev.failsafe.TimeoutExceededException;
-import dev.failsafe.event.EventListener;
-import dev.failsafe.event.ExecutionAttemptedEvent;
-import dev.failsafe.event.ExecutionCompletedEvent;
 import dev.failsafe.function.CheckedPredicate;
 import dev.failsafe.function.CheckedSupplier;
 
 import java.time.Duration;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Predicate;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * @see FailsafeException
@@ -79,7 +71,9 @@ public class CommandExecutor<R> {
   private final List<Policy<Object>> policies = new ArrayList<>(4);
   private final List<RetryPolicyBuilder<Object>> retryPolicyBuilderList = new ArrayList<>(4);
 
-  private boolean txn = true;
+  private boolean txn = false;
+
+  private boolean causallyConsistent = false;
 
   public CommandExecutor(MongoClient client) {
     this.client = client;
@@ -87,21 +81,26 @@ public class CommandExecutor<R> {
         RetryPolicy.builder()
             .handleIf(
                 (CheckedPredicate<MongoException>)
-                    dbError ->
-                        dbError.hasErrorLabel(MongoException.TRANSIENT_TRANSACTION_ERROR_LABEL)
-                            || dbError.hasErrorLabel(
-                                MongoException.UNKNOWN_TRANSACTION_COMMIT_RESULT_LABEL))
-            .build());
+                    dbError -> {
+                      boolean b =
+                          dbError.hasErrorLabel(MongoException.TRANSIENT_TRANSACTION_ERROR_LABEL)
+                              || dbError.hasErrorLabel(
+                                  MongoException.UNKNOWN_TRANSACTION_COMMIT_RESULT_LABEL);
 
+                      return b;
+                    })
+            .build());
     this.policies.add(
         RetryPolicy.builder()
             .handleIf(
                 (CheckedPredicate<MongoException>)
                     dbError -> {
-                      int code = dbError.getCode();
-                      return code == MongoErrorCode.LOCK_TIMEOUT.getCode()
-                          || code == MongoErrorCode.LOCK_BUSY.getCode()
-                          || code == MongoErrorCode.WRITE_CONFLICT.getCode();
+                      {
+                        int code = dbError.getCode();
+                        return code == MongoErrorCode.LOCK_TIMEOUT.getCode()
+                            || code == MongoErrorCode.LOCK_BUSY.getCode()
+                            || code == MongoErrorCode.WRITE_CONFLICT.getCode();
+                      }
                     })
             .build());
 
@@ -135,26 +134,41 @@ public class CommandExecutor<R> {
     return this;
   }
 
+  public CommandExecutor<R> withCausallyConsistent() {
+    this.causallyConsistent = true;
+    return this;
+  }
+
+  public CommandExecutor<R> withoutCausallyConsistent() {
+    this.causallyConsistent = false;
+    return this;
+  }
+
   public CommandExecutor<R> retryOnCode(MongoErrorCode code) {
     this.retryPolicyBuilderList.add(
         RetryPolicy.builder()
             .withMaxRetries(-1)
             .handleIf(
-                throwable ->
-                    throwable instanceof MongoException dbError
-                        && dbError.getCode() == code.getCode()));
+                throwable -> {
+                  boolean b =
+                      throwable instanceof MongoException dbError
+                          && dbError.getCode() == code.getCode();
+
+                  return b;
+                }));
     return this;
   }
 
+  @Deprecated
   public CommandExecutor<R> retryOnResult(Predicate<R> resultPredicate) {
     this.retryPolicyBuilderList.add(
         RetryPolicy.builder()
-            .withMaxRetries(-1)
             .handleResultIf(
                 o -> {
                   R result = (R) o;
                   return resultPredicate.test(result);
-                }));
+                })
+            .abortOn(Exception.class));
     return this;
   }
 
@@ -171,6 +185,7 @@ public class CommandExecutor<R> {
     return this;
   }
 
+  @CheckReturnValue
   public Result<R> execute(Function<ClientSession, R> command) {
 
     for (RetryPolicyBuilder<Object> policyBuilder : this.retryPolicyBuilderList) {
@@ -181,9 +196,11 @@ public class CommandExecutor<R> {
 
     CheckedSupplier<R> block =
         () -> {
-          if (txn) {
+          if (txn || causallyConsistent) {
             try (ClientSession session = client.startSession(CLIENT_SESSION_OPTIONS)) {
-              return session.withTransaction(() -> command.apply(session), TRANSACTION_OPTIONS);
+              return txn
+                  ? session.withTransaction(() -> command.apply(session), TRANSACTION_OPTIONS)
+                  : command.apply(session);
             }
           }
           return command.apply(null);

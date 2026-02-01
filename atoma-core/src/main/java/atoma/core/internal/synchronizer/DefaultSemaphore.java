@@ -8,13 +8,20 @@ import atoma.api.coordination.ResourceChangeEvent;
 import atoma.api.coordination.Subscription;
 import atoma.api.coordination.command.SemaphoreCommand;
 import atoma.api.synchronizer.Semaphore;
-import atoma.core.internal.ThreadUtils;
+import com.google.common.annotations.Beta;
+import com.google.errorprone.annotations.CheckReturnValue;
+import com.google.errorprone.annotations.MustBeClosed;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+
+import static atoma.core.internal.ThreadUtils.getCurrentThreadId;
 
 /**
  * The default client-side implementation of a distributed {@link Semaphore}.
@@ -74,58 +81,86 @@ import java.util.concurrent.locks.ReentrantLock;
  * this creates a "thundering herd" where all threads re-attempt acquisition, it is the correct
  * approach for a semaphore. It guarantees that all newly available permits are contended for,
  * maximizing resource utilization and ensuring liveness for all waiting threads.
- *
- * @see atoma.api.synchronizer.Semaphore
- * @see atoma.api.coordination.CoordinationStore
  */
+@Beta
+@ThreadSafe
 public class DefaultSemaphore extends Semaphore {
-
+  private final Logger log = LoggerFactory.getLogger(DefaultSemaphore.class);
   private final String resourceId;
   private final String leaseId;
-  private final int initialPermits;
+
   private final CoordinationStore coordination;
   private final Subscription subscription;
 
   private final ReentrantLock localLock = new ReentrantLock(true);
   private final Condition permitsAvailable = localLock.newCondition();
 
+  @GuardedBy("localLock")
+  private volatile long clientLogicalLockVersion = 0L;
+
+  private final int initialPermits;
+
+  @GuardedBy("localLock")
+  private volatile int availablePermits;
+
+  @MustBeClosed
   public DefaultSemaphore(
       String resourceId, String leaseId, int initialPermits, CoordinationStore coordination) {
     this.resourceId = resourceId;
     this.leaseId = leaseId;
     this.initialPermits = initialPermits;
+    this.availablePermits = initialPermits;
     this.coordination = coordination;
 
     this.subscription =
         coordination.subscribe(
-            Semaphore.class, // TODO: This should be a defined constant for Semaphore
+            Semaphore.class,
             resourceId,
             event -> {
-              boolean shouldSignal = false;
-              if (event.getType() == ResourceChangeEvent.EventType.DELETED) {
-                shouldSignal = true;
-              } else if (event.getType() == ResourceChangeEvent.EventType.UPDATED) {
-                Optional<Resource> oldNodeOpt = event.getOldNode();
-                Optional<Resource> newNodeOpt = event.getNewNode();
-
-                if (oldNodeOpt.isPresent() && newNodeOpt.isPresent()) {
-                  Integer oldPermits = oldNodeOpt.get().get("available_permits");
-                  Integer newPermits = newNodeOpt.get().get("available_permits");
-
-                  // Only signal if the number of available permits has actually increased.
-                  if (oldPermits != null && newPermits != null && newPermits > oldPermits) {
-                    shouldSignal = true;
-                  }
-                }
+              if (log.isDebugEnabled()) {
+                log.debug(
+                    "Semaphore received an event. Event-type: {}. Latest version: {} Semaphore Data: {}  ",
+                    event.getType(),
+                    event.getNewNode().map(Resource::getVersion).orElse(-1L),
+                    event.getNewNode().map(Resource::getData).orElse(null));
               }
 
-              if (shouldSignal) {
-                localLock.lock();
-                try {
-                  permitsAvailable.signalAll();
-                } finally {
-                  localLock.unlock();
+              boolean shouldSignal;
+              if (event.getType() == ResourceChangeEvent.EventType.DELETED) {
+                shouldSignal = true;
+              } else {
+                shouldSignal =
+                    event
+                        .getNewNode()
+                        .map(
+                            n -> {
+                              int latestAvailablePermits = n.get("available_permits");
+                              return latestAvailablePermits > 0;
+                            })
+                        .orElse(false);
+              }
+
+              localLock.lock();
+              try {
+                if (event.getType().equals(ResourceChangeEvent.EventType.DELETED)) {
+                  clientLogicalLockVersion = 0L;
+                  availablePermits = initialPermits;
+                } else {
+                  event
+                      .getNewNode()
+                      .ifPresent(
+                          n -> {
+                            clientLogicalLockVersion = n.get("version");
+                            availablePermits = n.get("available_permits");
+                          });
                 }
+
+                if (shouldSignal) {
+                  permitsAvailable.signal();
+                }
+
+              } finally {
+                localLock.unlock();
               }
             });
   }
@@ -141,7 +176,7 @@ public class DefaultSemaphore extends Semaphore {
   @Override
   public void acquire(int permits) throws InterruptedException {
     try {
-      doAcquire(permits, -1, null);
+      doAcquire(permits, -1, TimeUnit.SECONDS);
     } catch (TimeoutException e) {
       // This should not happen in a non-timed acquire.
       throw new AssertionError("Timeout occurred in non-timed acquire method", e);
@@ -184,8 +219,7 @@ public class DefaultSemaphore extends Semaphore {
     if (permits < 0) throw new IllegalArgumentException("permits must be non-negative");
     if (permits == 0) return;
 
-    String holderId = ThreadUtils.getCurrentThreadId();
-    var releaseCommand = new SemaphoreCommand.Release(permits, holderId, leaseId);
+    var releaseCommand = new SemaphoreCommand.Release(permits, getCurrentThreadId(), leaseId);
     try {
       coordination.execute(resourceId, releaseCommand);
     } catch (AtomaException e) {
@@ -233,20 +267,34 @@ public class DefaultSemaphore extends Semaphore {
       throws InterruptedException, TimeoutException {
     if (permits < 0) throw new IllegalArgumentException("permits must be non-negative");
     if (permits == 0) return;
+    if (time == 0L)
+      throw new TimeoutException(
+          "Semaphore acquire command timed out during server-side execution.");
 
-    final boolean timed = (unit != null && time >= 0);
-    long remainingNanos = timed ? unit.toNanos(time) : 0;
+    final boolean timed = (unit != null && time > 0L);
+    long start = System.nanoTime(), clockTimeout = timed ? unit.toNanos(time) : -1L;
 
-    String holderId = ThreadUtils.getCurrentThreadId();
-    var acquireCommand =
-        new SemaphoreCommand.Acquire(permits, holderId, leaseId, time, unit, initialPermits);
-
+    Retry:
     for (; ; ) {
+      long remainingNanos = timed ? (clockTimeout - (System.nanoTime() - start)) : -1L;
+      var acquireCommand =
+          new SemaphoreCommand.Acquire(
+              permits, leaseId, remainingNanos, TimeUnit.NANOSECONDS, initialPermits);
+      SemaphoreCommand.AcquireResult result;
       try {
-        SemaphoreCommand.AcquireResult result = coordination.execute(resourceId, acquireCommand);
+        result = coordination.execute(resourceId, acquireCommand);
         if (result.acquired()) {
+          localLock.lock();
+          try {
+            if (availablePermits > 0) permitsAvailable.signal();
+          } finally {
+            localLock.unlock();
+          }
           return; // Success
         }
+
+        // Acquire failed.
+        remainingNanos = timed ? (clockTimeout - (System.nanoTime() - start)) : -1L;
       } catch (AtomaException e) {
         Throwable cause = e;
         while (cause != null) {
@@ -261,25 +309,52 @@ public class DefaultSemaphore extends Semaphore {
       }
 
       // If acquisition failed, prepare to wait.
-      if (timed && remainingNanos <= 0) {
+      if (timed && remainingNanos <= 0L) {
         throw new TimeoutException("Unable to acquire permits within the specified time.");
       }
 
       localLock.lock();
       try {
-        if (timed) {
-          if (remainingNanos <= 0) throw new TimeoutException("Wait time elapsed.");
-          long start = System.nanoTime();
-          if (!permitsAvailable.await(remainingNanos, TimeUnit.NANOSECONDS)) {
-            throw new TimeoutException("Wait time elapsed before signal.");
+        if ((result.serverLogicalLatestVersion() < clientLogicalLockVersion
+                && clientLogicalLockVersion > 0L)
+            || clientLogicalLockVersion == 0L) {
+          continue Retry;
+        }
+
+        while (availablePermits < permits) {
+          if (timed) {
+            if (remainingNanos <= 0L) throw new TimeoutException("Wait time elapsed.");
+            if (!permitsAvailable.await(remainingNanos, TimeUnit.NANOSECONDS)) {
+              throw new TimeoutException("Wait time elapsed before signal.");
+            }
+            remainingNanos -= (System.nanoTime() - start);
+          } else {
+            permitsAvailable.await();
           }
-          remainingNanos -= (System.nanoTime() - start);
-        } else {
-          permitsAvailable.await();
         }
       } finally {
         localLock.unlock();
       }
     }
+  }
+
+  @CheckReturnValue
+  private SemaphoreCommand.GetStateResult getState() {
+    var command = new SemaphoreCommand.GetState(leaseId, initialPermits);
+    return coordination.execute(resourceId, command);
+  }
+
+  @Override
+  public int drainPermits() {
+    if (closed.get()) return -1;
+    SemaphoreCommand.GetStateResult result = getState();
+    return result.drainPermits();
+  }
+
+  @Override
+  public int availablePermits() {
+    if (closed.get()) return -1;
+    SemaphoreCommand.GetStateResult result = getState();
+    return result.availablePermits();
   }
 }

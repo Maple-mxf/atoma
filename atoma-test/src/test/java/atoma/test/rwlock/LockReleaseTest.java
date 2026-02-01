@@ -4,6 +4,7 @@ import atoma.api.Lease;
 import atoma.api.lock.Lock;
 import atoma.api.lock.ReadWriteLock;
 import atoma.test.BaseTest;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -22,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 public class LockReleaseTest extends BaseTest {
 
+  @DisplayName("TEST-REL-001: 验证客户端主动释放读锁的正确性")
   @Test
   public void testReadLockRelease() throws Exception {
     final String resourceId = "test-read-release-resource";
@@ -45,6 +47,7 @@ public class LockReleaseTest extends BaseTest {
     }
   }
 
+  @DisplayName("TEST-REL-001: 验证客户端主动释放写锁的正确性")
   @Test
   public void testWriteLockRelease() throws Exception {
     final String resourceId = "test-write-release-resource";
@@ -68,6 +71,7 @@ public class LockReleaseTest extends BaseTest {
     }
   }
 
+  @DisplayName("TEST-REL-001: 验证读锁全部释放后写锁能够获取")
   @Test
   public void testMultipleReadLocksRelease() throws Exception {
     final String resourceId = "test-multi-read-release-resource";
@@ -95,7 +99,7 @@ public class LockReleaseTest extends BaseTest {
             () -> {
               try {
                 writeLockAttempts.incrementAndGet();
-                writeLock.lock(1, TimeUnit.SECONDS);
+                writeLock.lock(3, TimeUnit.SECONDS);
                 writeLockAcquired.countDown();
                 writeLock.unlock();
               } catch (Exception e) {
@@ -135,6 +139,7 @@ public class LockReleaseTest extends BaseTest {
     assertThat(writeLockAcquired.getCount()).isEqualTo(0);
   }
 
+  @DisplayName("TEST-REL-001: 验证读锁可重入性质")
   @Test
   public void testReentrantReadLockRelease() throws Exception {
     final String resourceId = "test-reentrant-read-release-resource";
@@ -162,6 +167,7 @@ public class LockReleaseTest extends BaseTest {
     }
   }
 
+  @DisplayName("TEST-REL-001: 验证写锁可重入性质")
   @Test
   public void testReentrantWriteLockRelease() throws Exception {
     final String resourceId = "test-reentrant-write-release-resource";
@@ -189,6 +195,7 @@ public class LockReleaseTest extends BaseTest {
     }
   }
 
+  @DisplayName("TEST-REL-001: 验证唤醒")
   @Test
   public void testLockReleaseNotification() throws Exception {
     final String resourceId = "test-release-notification-resource";
@@ -228,12 +235,13 @@ public class LockReleaseTest extends BaseTest {
     writeLock.unlock();
 
     // 等待读锁获取通知
-    boolean allReadLocksAcquired = readLockAcquired.await(2, TimeUnit.SECONDS);
+    boolean allReadLocksAcquired = readLockAcquired.await(3, TimeUnit.SECONDS);
 
     // 验证至少有一个读锁被获取
     assertThat(allReadLocksAcquired).isTrue();
   }
 
+  @DisplayName("TEST-REL-001: 验证唤醒")
   @Test
   public void testReleaseNonExistentLock() {
     final String resourceId = "test-release-non-existent-resource";

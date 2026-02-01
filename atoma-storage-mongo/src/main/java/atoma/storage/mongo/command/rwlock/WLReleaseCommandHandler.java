@@ -104,6 +104,7 @@ public class WLReleaseCommandHandler
     Result<Void> result =
         this.newCommandExecutor(client)
             .withoutTxn()
+            .withoutCausallyConsistent()
             .retryOnException(CommandFailureException.class)
             .retryOnCode(WRITE_CONFLICT)
             .execute(cmdBlock);

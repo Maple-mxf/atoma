@@ -4,9 +4,12 @@ import atoma.api.Lease;
 import atoma.api.lock.Lock;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import atoma.client.AtomaClient;
+import atoma.storage.mongo.MongoCoordinationStore;
 import atoma.test.BaseTest;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.DisplayName;
@@ -16,11 +19,15 @@ public class LockReleaseIdempotencyTest extends BaseTest {
 
   @Test
   @DisplayName("TC-07: 锁释放的幂等性处理")
-  public void testLockReleaseIdempotency() throws InterruptedException {
+  public void testLockReleaseIdempotency() throws Exception {
     String resourceId = "test-resource-tc07";
 
+    ScheduledExecutorService scheduledExecutorService = newScheduledExecutorService();
+    MongoCoordinationStore mongoCoordinationStore = newMongoCoordinationStore();
+    AtomaClient client = new AtomaClient(scheduledExecutorService, mongoCoordinationStore);
+
     // 场景1：验证锁释放后不能再次释放
-    Lease lease = this.atomaClient.grantLease(Duration.ofSeconds(30));
+    Lease lease = client.grantLease(Duration.ofSeconds(30));
     Lock lock = lease.getLock(resourceId);
 
     // 获取锁
@@ -47,15 +54,18 @@ public class LockReleaseIdempotencyTest extends BaseTest {
     // 场景3：验证同一线程可重入锁的释放
     testReentrantLockRelease();
 
+    client.close();
+
     System.out.println("TC-07: 锁释放的幂等性处理 - PASSED");
   }
 
-  private void testNonOwnerCannotRelease() {
+  private void testNonOwnerCannotRelease() throws Exception {
     String resourceId = "test-resource-tc07-non-owner";
     CountDownLatch latch = new CountDownLatch(1);
 
     // 线程1获取锁
-    Lease lease1 = this.atomaClient.grantLease(Duration.ofSeconds(30));
+    AtomaClient client = new AtomaClient(newMongoCoordinationStore());
+    Lease lease1 = client.grantLease(Duration.ofSeconds(30));
     Lock lock1 = lease1.getLock(resourceId);
 
     Thread ownerThread =
@@ -103,12 +113,14 @@ public class LockReleaseIdempotencyTest extends BaseTest {
     }
 
     lease1.revoke();
+    client.close();
     System.out.println("非持有者释放锁测试通过");
   }
 
-  private void testReentrantLockRelease() throws InterruptedException {
+  private void testReentrantLockRelease() throws Exception {
     String resourceId = "test-resource-tc07-reentrant";
-    Lease lease = this.atomaClient.grantLease(Duration.ofSeconds(30));
+    AtomaClient client = new AtomaClient(newMongoCoordinationStore());
+    Lease lease = client.grantLease(Duration.ofSeconds(30));
     Lock lock = lease.getLock(resourceId);
 
     // 支持重入，测试重入后的释放
@@ -122,16 +134,22 @@ public class LockReleaseIdempotencyTest extends BaseTest {
     }
 
     lease.revoke();
+    client.close();
     System.out.println("重入锁释放测试完成");
   }
 
   @Test
   @DisplayName("TC-07-严格版: 验证锁释放的严格语义")
-  void testStrictLockReleaseSemantics() throws InterruptedException {
+  void testStrictLockReleaseSemantics() throws Exception {
     String resourceId = "test-resource-tc07-strict";
 
     // 严格测试：锁只能被释放一次
-    Lease lease = this.atomaClient.grantLease(Duration.ofSeconds(30));
+    ScheduledExecutorService scheduledExecutorService = newScheduledExecutorService();
+    MongoCoordinationStore mongoCoordinationStore = newMongoCoordinationStore();
+    AtomaClient client = new AtomaClient(scheduledExecutorService, mongoCoordinationStore);
+
+
+    Lease lease = client.grantLease(Duration.ofSeconds(30));
     Lock lock = lease.getLock(resourceId);
 
     // 1. 获取锁
@@ -148,8 +166,7 @@ public class LockReleaseIdempotencyTest extends BaseTest {
         new Thread(
             () -> {
               try {
-                Lock otherLock =
-                    this.atomaClient.grantLease(Duration.ofSeconds(30)).getLock(resourceId);
+                Lock otherLock = client.grantLease(Duration.ofSeconds(30)).getLock(resourceId);
                 try {
                   otherLock.lock(1, TimeUnit.SECONDS);
                   otherLock.unlock();
@@ -167,11 +184,12 @@ public class LockReleaseIdempotencyTest extends BaseTest {
     latch.await(2, TimeUnit.SECONDS);
 
     // 4. 再次尝试释放（应该失败）
-    Assertions.assertThatThrownBy(() -> lock.unlock())
+    Assertions.assertThatThrownBy(lock::unlock)
         .isInstanceOf(IllegalMonitorStateException.class)
         .as("已经释放的锁不能再次释放");
 
     lease.revoke();
+    client.close();
     System.out.println("严格语义验证完成");
   }
 }

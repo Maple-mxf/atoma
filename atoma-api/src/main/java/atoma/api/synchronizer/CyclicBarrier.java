@@ -6,9 +6,6 @@ import atoma.api.Resourceful;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-/**
- * @see java.util.concurrent.CyclicBarrier
- */
 public abstract class CyclicBarrier extends Resourceful {
 
   public abstract void await(long timeout, TimeUnit unit)

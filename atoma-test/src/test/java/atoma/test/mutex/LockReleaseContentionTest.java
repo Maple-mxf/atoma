@@ -9,9 +9,12 @@ import atoma.api.Lease;
 import atoma.api.lock.Lock;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import atoma.client.AtomaClient;
+import atoma.storage.mongo.MongoCoordinationStore;
 import atoma.test.BaseTest;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.DisplayName;
@@ -22,14 +25,19 @@ public class LockReleaseContentionTest extends BaseTest {
 
   @Test
   @DisplayName("TC-13: 锁释放瞬间大量客户端争抢")
-  void testLockReleaseContention() throws InterruptedException {
+  void testLockReleaseContention() throws Exception {
     String resourceId = "test-resource-tc13";
     int waitingClientCount = 30;
     CountDownLatch lockHeld = new CountDownLatch(1);
     CountDownLatch lockReleased = new CountDownLatch(1);
     CountDownLatch allAcquired = new CountDownLatch(waitingClientCount);
     AtomicInteger successCount = new AtomicInteger(0);
-    Lease lease1 = this.atomaClient.grantLease(Duration.ofSeconds(30L));
+
+    ScheduledExecutorService scheduledExecutorService = newScheduledExecutorService();
+    MongoCoordinationStore mongoCoordinationStore = newMongoCoordinationStore();
+    AtomaClient client = new AtomaClient(scheduledExecutorService, mongoCoordinationStore);
+
+    Lease lease1 = client.grantLease(Duration.ofSeconds(30L));
     Lock lock1 = lease1.getLock(resourceId);
     Thread holderThread =
         new Thread(
@@ -52,7 +60,7 @@ public class LockReleaseContentionTest extends BaseTest {
                 try {
                   lockHeld.await();
                   lockReleased.await();
-                  Lease lease = this.atomaClient.grantLease(Duration.ofSeconds(30L));
+                  Lease lease = client.grantLease(Duration.ofSeconds(30L));
                   Lock lock = lease.getLock(resourceId);
 
                   try {
@@ -80,6 +88,9 @@ public class LockReleaseContentionTest extends BaseTest {
     Assertions.assertThat(successCount.get()).isEqualTo(waitingClientCount);
     holderThread.join();
     lease1.revoke();
+
+    client.close();
+
     System.out.println("TC-13: 锁释放瞬间大量客户端争抢 - PASSED");
     System.out.println("Total waiting clients: " + waitingClientCount);
     System.out.println("Successful acquisitions: " + successCount.get());

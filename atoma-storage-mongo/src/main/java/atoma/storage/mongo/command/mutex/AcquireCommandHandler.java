@@ -6,29 +6,28 @@ import atoma.api.coordination.command.CommandHandler;
 import atoma.api.coordination.command.HandlesCommand;
 import atoma.api.coordination.command.LockCommand;
 import atoma.storage.mongo.command.AtomaCollectionNamespace;
-import atoma.storage.mongo.command.CommandExecutor;
 import atoma.storage.mongo.command.CommandFailureException;
 import atoma.storage.mongo.command.MongoCommandHandler;
 import atoma.storage.mongo.command.MongoCommandHandlerContext;
 import com.google.auto.service.AutoService;
-import com.mongodb.MongoCommandException;
 import com.mongodb.client.ClientSession;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.FindOneAndUpdateOptions;
 import com.mongodb.client.model.ReturnDocument;
-import com.mongodb.client.model.UpdateOptions;
+import org.bson.BsonNull;
 import org.bson.Document;
+import org.bson.conversions.Bson;
 
 import java.time.Duration;
-import java.util.Optional;
+import java.util.Arrays;
+import java.util.List;
 import java.util.function.Function;
 
 import static atoma.storage.mongo.command.MongoErrorCode.DUPLICATE_KEY;
 import static atoma.storage.mongo.command.MongoErrorCode.WRITE_CONFLICT;
-import static com.mongodb.client.model.Filters.and;
+import static com.mongodb.client.model.Aggregates.replaceRoot;
 import static com.mongodb.client.model.Filters.eq;
-import static com.mongodb.client.model.Updates.*;
 
 /**
  * Handles the {@link LockCommand.Acquire} command to acquire a distributed mutex lock.
@@ -78,6 +77,62 @@ import static com.mongodb.client.model.Updates.*;
 public final class AcquireCommandHandler
     extends MongoCommandHandler<LockCommand.Acquire, LockCommand.AcquireResult> {
 
+  private List<Bson> buildAggregationPipeline(String holder, String lease) {
+    return List.of(
+        replaceRoot(
+            new Document(
+                "newRoot",
+                new Document(
+                    "$cond",
+                    Arrays.asList(
+                        // ========= if =========
+                        new Document(
+                            "$or",
+                            Arrays.asList(
+                                new Document(
+                                    "$and",
+                                    Arrays.asList(
+                                        new Document(
+                                            "$eq",
+                                            Arrays.asList(
+                                                new Document("$type", "$holder"), "missing")),
+                                        new Document(
+                                            "$eq",
+                                            Arrays.asList(
+                                                new Document("$type", "$lease"), "missing")))),
+                                new Document(
+                                    "$and",
+                                    Arrays.asList(
+                                        new Document("$eq", Arrays.asList("$holder", holder)),
+                                        new Document("$eq", Arrays.asList("$lease", lease)))))),
+
+                        // ========= then =========
+                        new Document()
+                            .append("lease", lease)
+                            .append("holder", holder)
+                            .append(
+                                "version",
+                                new Document(
+                                    "$cond",
+                                    Arrays.asList(
+                                        new Document(
+                                            "$or",
+                                            Arrays.asList(
+                                                new Document(
+                                                    "$eq",
+                                                    Arrays.asList(
+                                                        new Document("$type", "$version"),
+                                                        "missing")),
+                                                new Document(
+                                                    "$eq",
+                                                    Arrays.asList("$version", BsonNull.VALUE)))),
+                                        1L,
+                                        new Document("$add", Arrays.asList("$version", 1L))))),
+
+                        // ========= else =========
+                        "$$ROOT")))));
+  }
+
   @Override
   public LockCommand.AcquireResult execute(
       LockCommand.Acquire command, MongoCommandHandlerContext context) {
@@ -85,17 +140,15 @@ public final class AcquireCommandHandler
     MongoCollection<Document> collection =
         getCollection(context, AtomaCollectionNamespace.MUTEX_LOCK_NAMESPACE);
 
+    List<Bson> pipeline = buildAggregationPipeline(command.holderId(), command.leaseId());
+
     Function<ClientSession, LockCommand.AcquireResult> cmdBlock =
         session -> {
-
           // Which will return an old document if the lock is already held by other thread.
           Document lockDoc =
               collection.findOneAndUpdate(
                   eq("_id", context.getResourceId()),
-                  combine(
-                      setOnInsert("lease", command.leaseId()),
-                      setOnInsert("holder", command.holderId()),
-                      inc("version", 1L)),
+                  pipeline,
                   new FindOneAndUpdateOptions().returnDocument(ReturnDocument.AFTER).upsert(true));
 
           // Acquisition success.
@@ -106,6 +159,9 @@ public final class AcquireCommandHandler
 
           // Acquisition failed.
           if (lockDoc != null) {
+            System.out.printf(
+                "Thread %s update done %s%n", Thread.currentThread().getName(), lockDoc);
+
             return new LockCommand.AcquireResult(false, lockDoc.getLong("version"));
           }
 
@@ -117,12 +173,10 @@ public final class AcquireCommandHandler
     Result<LockCommand.AcquireResult> result =
         this.newCommandExecutor(client)
             .withoutTxn()
+            .withoutCausallyConsistent()
             .retryOnException(CommandFailureException.class)
-            .retryOnException(
-                throwable ->
-                    throwable instanceof MongoCommandException cmdEx
-                        && cmdEx.getCode() == DUPLICATE_KEY.getCode())
             .retryOnCode(WRITE_CONFLICT)
+            .retryOnCode(DUPLICATE_KEY)
             .withTimeout(Duration.of(command.timeout(), command.timeUnit().toChronoUnit()))
             .execute(cmdBlock);
 

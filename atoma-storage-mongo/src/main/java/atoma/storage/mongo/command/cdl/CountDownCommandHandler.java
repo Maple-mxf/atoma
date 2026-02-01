@@ -5,21 +5,24 @@ import atoma.api.Result;
 import atoma.api.coordination.command.CommandHandler;
 import atoma.api.coordination.command.CountDownLatchCommand;
 import atoma.api.coordination.command.HandlesCommand;
-import atoma.storage.mongo.command.AtomaCollectionNamespace;
 import atoma.storage.mongo.command.MongoCommandHandler;
 import atoma.storage.mongo.command.MongoCommandHandlerContext;
 import com.google.auto.service.AutoService;
 import com.mongodb.client.ClientSession;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.FindOneAndUpdateOptions;
+import com.mongodb.client.model.ReturnDocument;
 import org.bson.Document;
+import org.bson.conversions.Bson;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.function.Function;
 
-import static com.mongodb.client.model.Filters.and;
+import static atoma.storage.mongo.command.AtomaCollectionNamespace.COUNTDOWN_LATCH_NAMESPACE;
+import static com.mongodb.client.model.Aggregates.replaceRoot;
 import static com.mongodb.client.model.Filters.eq;
-import static com.mongodb.client.model.Filters.gt;
-import static com.mongodb.client.model.Updates.inc;
 
 /**
  * Handles the {@code countDown} operation for a distributed {@code CountDownLatch}.
@@ -35,7 +38,8 @@ import static com.mongodb.client.model.Updates.inc;
  * <pre>{@code
  * {
  *   "_id": "latch-resource-id",
- *   "count": 3
+ *   "count": 3,
+ *   "_update_flag:": true
  * }
  * }</pre>
  */
@@ -44,6 +48,24 @@ import static com.mongodb.client.model.Updates.inc;
 @AutoService({CommandHandler.class})
 public class CountDownCommandHandler
     extends MongoCommandHandler<CountDownLatchCommand.CountDown, Void> {
+
+  private List<Bson> buildAggregationPipeline() {
+    return List.of(
+        replaceRoot(
+            new Document(
+                "$cond",
+                new Document("if", new Document("$gte", Arrays.asList("$count", 0)))
+                    .append(
+                        "then",
+                        new Document()
+                            .append("count", new Document("$add", Arrays.asList("$count", -1)))
+                            .append("_update_flag", true))
+                    .append(
+                        "else",
+                        new Document(
+                            "$mergeObjects",
+                            Arrays.asList("$$ROOT", new Document("_update_flag", false)))))));
+  }
 
   /**
    * Executes the atomic decrement command.
@@ -56,17 +78,26 @@ public class CountDownCommandHandler
   @Override
   public Void execute(CountDownLatchCommand.CountDown command, MongoCommandHandlerContext context) {
     MongoClient client = context.getClient();
-    MongoCollection<Document> collection =
-        getCollection(context, AtomaCollectionNamespace.COUNTDOWN_LATCH_NAMESPACE);
+    MongoCollection<Document> collection = getCollection(context, COUNTDOWN_LATCH_NAMESPACE);
+
+    List<Bson> pipeline = buildAggregationPipeline();
 
     Function<ClientSession, Void> cmdBlock =
         session -> {
-          collection.updateOne(
-              and(
+          Document countDownLatchDoc =
+              collection.findOneAndUpdate(
                   eq("_id", context.getResourceId()),
-                  gt("count", 0) // Only decrement if count is positive
-                  ),
-              inc("count", -1));
+                  pipeline,
+                  new FindOneAndUpdateOptions().upsert(false).returnDocument(ReturnDocument.AFTER));
+
+          if (countDownLatchDoc == null) {
+            throw new IllegalStateException(
+                "Failed to count-down. the count-down-latch does not exist");
+          }
+
+          /*if (!countDownLatchDoc.getBoolean("_update_flag"))
+            throw new IllegalStateException("The count is already negative");*/
+
           return null;
         };
 

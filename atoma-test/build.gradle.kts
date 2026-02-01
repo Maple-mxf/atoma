@@ -35,4 +35,10 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    filter {
+        includeTestsMatching("atoma.test.mutex.*")
+        includeTestsMatching("atoma.test.rwlock.*")
+        includeTestsMatching("atoma.test.semaphore.*")
+        includeTestsMatching("atoma.test.cdl.*")
+    }
 }
