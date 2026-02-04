@@ -28,6 +28,8 @@ import com.google.common.annotations.Beta;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.ThreadSafe;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
@@ -78,14 +80,12 @@ import static java.util.Collections.emptyList;
  * <p><b>Resource Management:</b> This class implements {@link AutoCloseable}. It is crucial to
  * close the barrier instance (e.g., using a try-with-resources block) to release the underlying
  * network subscription and prevent resource leaks.
- *
- * @see atoma.api.synchronizer.CyclicBarrier
- * @see atoma.api.coordination.CoordinationStore
  */
 @Beta
 @ThreadSafe
 final class DefaultCyclicBarrier extends CyclicBarrier {
 
+  private final Logger log = LoggerFactory.getLogger(DefaultCyclicBarrier.class);
   private final String resourceId;
   private final int parties;
   private final CoordinationStore coordination;
@@ -159,13 +159,19 @@ final class DefaultCyclicBarrier extends CyclicBarrier {
 
                           List<Map<String, String>> participants =
                               newNode.get("participants", emptyList());
-                          boolean leaseExpired =
-                              participants.stream().noneMatch(t -> t.get("lease").equals(leaseId));
 
                           boolean shouldSignal =
                               newGen > remoteGeneration
                                   || newNode.get("is_broken", false)
-                                  || leaseExpired;
+                                  || participants.stream()
+                                      .noneMatch(t -> t.get("lease").equals(leaseId));
+
+                          if (log.isDebugEnabled()) {
+                            log.debug(
+                                "Received an barrier change-event {}. shouldSignal: {}",
+                                newNode.getData(),
+                                shouldSignal);
+                          }
 
                           if (shouldSignal) {
                             localLock.lock();
@@ -244,32 +250,29 @@ final class DefaultCyclicBarrier extends CyclicBarrier {
     String participantId = String.format("%s/%s", leaseId, ThreadUtils.getCurrentThreadId());
 
     boolean waited = false;
-    Exit:
     for (; ; ) {
       long remainingNanos = timed ? (clockTimeout - (System.nanoTime() - start)) : -1L;
       try {
-        if (!waited) {
-          var awaitCommand =
-              new CyclicBarrierCommand.Await(
-                  participantId,
-                  leaseId,
-                  parties,
-                  remoteGeneration,
-                  remainingNanos,
-                  TimeUnit.NANOSECONDS);
-          result = coordination.execute(resourceId, awaitCommand);
-          if (result.broken()) {
-            throw new BrokenBarrierException("The barrier is in a broken state.");
-          }
-          if (result.passed()) {
-            // Our command was successfully processed (we either joined or tripped the barrier).
-            // Now, we must wait for the generation to change.
-            return;
-          }
-          if (result.waited()) waited = true;
-
-          remainingNanos = timed ? (clockTimeout - (System.nanoTime() - start)) : -1L;
+        var awaitCommand =
+            new CyclicBarrierCommand.Await(
+                participantId,
+                leaseId,
+                parties,
+                remoteGeneration,
+                remainingNanos,
+                TimeUnit.NANOSECONDS);
+        result = coordination.execute(resourceId, awaitCommand);
+        if (result.broken()) {
+          throw new BrokenBarrierException("The barrier is in a broken state.");
         }
+        if (result.passed()) {
+          // Our command was successfully processed (we either joined or tripped the barrier).
+          // Now, we must wait for the generation to change.
+          return;
+        }
+        if (result.waited()) waited = true;
+
+        remainingNanos = timed ? (clockTimeout - (System.nanoTime() - start)) : -1L;
 
       } catch (AtomaException e) {
         // Check if the exception or its cause is a server-side operation timeout.
@@ -293,10 +296,15 @@ final class DefaultCyclicBarrier extends CyclicBarrier {
       if (timed && remainingNanos <= 0L) {
         // Break the barrier for others if this thread times out.
         breakBarrier(result.generation());
+
+        if (log.isDebugEnabled()) {
+          log.debug("Break barrier in 1 remainingNanos {} ", remainingNanos);
+        }
+
         throw new TimeoutException("Unable to passed within the specified time.");
       }
 
-      final long generation = remoteGeneration;
+      final long generation = result.generation();
       localLock.lock();
       try {
         while (generation == remoteGeneration) {
@@ -307,10 +315,17 @@ final class DefaultCyclicBarrier extends CyclicBarrier {
             if (remainingNanos <= 0L) {
               // Break the barrier for others if this thread times out.
               breakBarrier(generation);
+              log.debug("Break barrier in 2 remainingNanos {} ", remainingNanos);
               throw new TimeoutException("Wait time elapsed.");
             }
+
+            log.debug(
+                "Waiting.... remoteGeneration {} generation {}  ", remoteGeneration, generation);
+
             if (!generationUpgraded.await(remainingNanos, TimeUnit.NANOSECONDS)) {
               // Break the barrier for others if this thread times out.
+              remainingNanos -= (System.nanoTime() - start); // TODO
+              log.debug("Break barrier in 3 remainingNanos {} ", remainingNanos); // TODO
               breakBarrier(generation);
               throw new TimeoutException("Wait for barrier to trip timed out.");
             }
@@ -321,18 +336,19 @@ final class DefaultCyclicBarrier extends CyclicBarrier {
 
           // Check if barrier was broken by a reset while we were about to wait
           if (isBroken()) throw new BrokenBarrierException("The barrier was broken while waiting.");
-          if (waited) {
-            // If we are here, the generation has changed.
-            // We need to re-query the server state to determine if the barrier was broken or
-            // passed.
-            // The 'break Exit' was a premature optimization that led to incorrect behavior.
-            // By not breaking, the outer for-loop will re-execute, sending a new Await command
-            // which will correctly reflect the broken state from the server.
-            break Exit;
-          }
         }
       } finally {
         localLock.unlock();
+      }
+
+      if (waited) {
+        // If we are here, the generation has changed.
+        // We need to re-query the server state to determine if the barrier was broken or
+        // passed.
+        // The 'break Exit' was a premature optimization that led to incorrect behavior.
+        // By not breaking, the outer for-loop will re-execute, sending a new Await command
+        // which will correctly reflect the broken state from the server.
+        break;
       }
     }
   }

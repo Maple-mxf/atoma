@@ -380,6 +380,13 @@ public class CleanDeadResourceCommandHandler
                     if (deadParticipantLeases == null || deadParticipantLeases.isEmpty())
                       return null;
 
+                    if (log.isDebugEnabled()) {
+                      log.debug(
+                          "Barrier[{}] will be broken.  version {} ",
+                          b.get("_id"),
+                          b.get("version"));
+                    }
+
                     return new UpdateOneModel<Document>(
                         and(eq("_id", b.get("_id")), eq("version", b.get("version"))),
                         combine(

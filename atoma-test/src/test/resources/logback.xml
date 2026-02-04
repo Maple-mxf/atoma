@@ -10,9 +10,10 @@
     <!-- 屏蔽MongoDB的debug日志 -->
     <logger name="org.mongodb.driver" level="WARN"/>
     <logger name="com.mongodb" level="WARN"/>
+    <logger name="atoma" level="DEBUG"/>
 
     <!-- 根日志级别设置为INFO -->
-    <root level="DEBUG">
+    <root level="INFO">
         <appender-ref ref="CONSOLE"/>
     </root>
 </configuration>

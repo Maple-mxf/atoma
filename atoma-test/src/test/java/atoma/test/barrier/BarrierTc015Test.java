@@ -13,9 +13,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Test case for BARRIER-TC-015: Barrier resets after all nodes arrive.
- */
+/** Test case for BARRIER-TC-015: Barrier resets after all nodes arrive. */
 public class BarrierTc015Test extends BaseTest {
 
   @DisplayName("BARRIER-TC-015: 所有节点到达后屏障重置")

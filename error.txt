@@ -1,3 +1,167 @@
-ConcurrentCountDownTest	atoma.test.cdl.ConcurrentCountDownTest	1	1	0	10.097s	0%
-HighConcurrencyCountAccuracyTest	atoma.test.cdl.HighConcurrencyCountAccuracyTest	1	1	0	30.106s	0%
-SingleClientCountDownLatchTest	atoma.test.cdl.SingleClientCountDownLatchTest	1	1	0	0.099s	0%
+BARRIER-TC-009: 节点重复注册到同一屏障
+
+org.opentest4j.AssertionFailedError: All parties should pass the barrier ==> expected: <true> but was: <false>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:158)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:139)
+	at org.junit.jupiter.api.AssertTrue.failNotTrue(AssertTrue.java:69)
+	at org.junit.jupiter.api.AssertTrue.assertTrue(AssertTrue.java:41)
+	at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:228)
+	at atoma.test.barrier.BarrierTc009Test.testRepeatedRegistration(BarrierTc009Test.java:49)
+
+pipeline script  [ {"$replaceRoot": {"newRoot": {"$cond": [{"$ne": [{"$type": "$parties"}, "missing"]}, {"$cond": [{"$ne": [2, "$parties"]}, {"$mergeObjects": ["$$ROOT", {"_inconsistent_parties": true, "_passed": false}]}, {"$cond": ["$is_broken", {"$mergeObjects": ["$$ROOT", {"is_broken": true}]}, {"$cond": [{"$eq": ["$generation", 5]}, {"$cond": [{"$eq": [{"$add": [{"$size": "$participants"}, 1]}, "$parties"]}, {"$mergeObjects": ["$$ROOT", {"participants": [], "generation": {"$add": ["$generation", 1]}, "version": {"$add": ["$version", 1]}, "_passed": true}]}, {"$mergeObjects": ["$$ROOT", {"_passed": false, "participants": {"$setUnion": ["$participants", [{"participant": "a69f26db-b819-462c-9013-ff662cde9e60/Thread-4-47", "lease": "a69f26db-b819-462c-9013-ff662cde9e60"}]]}, "version": {"$add": ["$version", 1]}}]}]}, {"$mergeObjects": ["$$ROOT", {"_passed": false}]}]}]}]}, {"$mergeObjects": ["$$ROOT", {"_inconsistent_parties": true}]}]}}} ]
+pipeline script  [ {"$replaceRoot": {"newRoot": {"$cond": [{"$ne": [{"$type": "$parties"}, "missing"]}, {"$cond": [{"$ne": [2, "$parties"]}, {"$mergeObjects": ["$$ROOT", {"_inconsistent_parties": true, "_passed": false}]}, {"$cond": ["$is_broken", {"$mergeObjects": ["$$ROOT", {"is_broken": true}]}, {"$cond": [{"$eq": ["$generation", 5]}, {"$cond": [{"$eq": [{"$add": [{"$size": "$participants"}, 1]}, "$parties"]}, {"$mergeObjects": ["$$ROOT", {"participants": [], "generation": {"$add": ["$generation", 1]}, "version": {"$add": ["$version", 1]}, "_passed": true}]}, {"$mergeObjects": ["$$ROOT", {"_passed": false, "participants": {"$setUnion": ["$participants", [{"participant": "a69f26db-b819-462c-9013-ff662cde9e60/Thread-3-46", "lease": "a69f26db-b819-462c-9013-ff662cde9e60"}]]}, "version": {"$add": ["$version", 1]}}]}]}, {"$mergeObjects": ["$$ROOT", {"_passed": false}]}]}]}]}, {"$mergeObjects": ["$$ROOT", {"_inconsistent_parties": true}]}]}}} ]
+19:00:51.500 [atoma-ttl-worker-1] DEBUG atoma.core.DefaultLease - Lease [a69f26db-b819-462c-9013-ff662cde9e60] renew completed. Previous expire time: 2026-02-04T11:01:23.485Z Next expire time: 2026-02-04T11:01:55.485Z
+
+
+Exception in thread "Thread-4" org.opentest4j.AssertionFailedError: Await should not fail
+	at org.junit.jupiter.api.AssertionUtils.fail(AssertionUtils.java:47)
+	at org.junit.jupiter.api.Assertions.fail(Assertions.java:157)
+	at atoma.test.barrier.BarrierTc009Test.lambda$testRepeatedRegistration$0(BarrierTc009Test.java:43)
+	at java.base/java.lang.Thread.run(Thread.java:842)
+Caused by: java.util.concurrent.TimeoutException: Wait for barrier to trip timed out.
+	at atoma.core.DefaultCyclicBarrier.doAwait(DefaultCyclicBarrier.java:315)
+	at atoma.core.DefaultCyclicBarrier.await(DefaultCyclicBarrier.java:231)
+	at atoma.test.barrier.BarrierTc009Test.lambda$testRepeatedRegistration$0(BarrierTc009Test.java:40)
+	... 1 more
+
+
+BARRIER-TC-010: 超过参与者数量的节点尝试注册
+
+org.opentest4j.AssertionFailedError: First barrier should be passed ==> expected: <true> but was: <false>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:158)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:139)
+	at org.junit.jupiter.api.AssertTrue.failNotTrue(AssertTrue.java:69)
+	at org.junit.jupiter.api.AssertTrue.assertTrue(AssertTrue.java:41)
+	at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:228)
+	at atoma.test.barrier.BarrierTc010Test.testMoreNodesThanParties(BarrierTc010Test.java:50)
+
+19:00:51.684 [atoma-ttl-worker-1] DEBUG atoma.core.DefaultLease - Lease [6c604307-b71d-4c91-b612-d2ce321e1069] renew completed. Previous expire time: 2026-02-04T11:01:23.671Z Next expire time: 2026-02-04T11:01:55.671Z
+pipeline script  [ {"$replaceRoot": {"newRoot": {"$cond": [{"$ne": [{"$type": "$parties"}, "missing"]}, {"$cond": [{"$ne": [2, "$parties"]}, {"$mergeObjects": ["$$ROOT", {"_inconsistent_parties": true, "_passed": false}]}, {"$cond": ["$is_broken", {"$mergeObjects": ["$$ROOT", {"is_broken": true}]}, {"$cond": [{"$eq": ["$generation", 9]}, {"$cond": [{"$eq": [{"$add": [{"$size": "$participants"}, 1]}, "$parties"]}, {"$mergeObjects": ["$$ROOT", {"participants": [], "generation": {"$add": ["$generation", 1]}, "version": {"$add": ["$version", 1]}, "_passed": true}]}, {"$mergeObjects": ["$$ROOT", {"_passed": false, "participants": {"$setUnion": ["$participants", [{"participant": "6c604307-b71d-4c91-b612-d2ce321e1069/Thread-7-59", "lease": "6c604307-b71d-4c91-b612-d2ce321e1069"}]]}, "version": {"$add": ["$version", 1]}}]}]}, {"$mergeObjects": ["$$ROOT", {"_passed": false}]}]}]}]}, {"$mergeObjects": ["$$ROOT", {"_inconsistent_parties": true}]}]}}} ]
+pipeline script  [ {"$replaceRoot": {"newRoot": {"$cond": [{"$ne": [{"$type": "$parties"}, "missing"]}, {"$cond": [{"$ne": [2, "$parties"]}, {"$mergeObjects": ["$$ROOT", {"_inconsistent_parties": true, "_passed": false}]}, {"$cond": ["$is_broken", {"$mergeObjects": ["$$ROOT", {"is_broken": true}]}, {"$cond": [{"$eq": ["$generation", 9]}, {"$cond": [{"$eq": [{"$add": [{"$size": "$participants"}, 1]}, "$parties"]}, {"$mergeObjects": ["$$ROOT", {"participants": [], "generation": {"$add": ["$generation", 1]}, "version": {"$add": ["$version", 1]}, "_passed": true}]}, {"$mergeObjects": ["$$ROOT", {"_passed": false, "participants": {"$setUnion": ["$participants", [{"participant": "6c604307-b71d-4c91-b612-d2ce321e1069/Thread-6-58", "lease": "6c604307-b71d-4c91-b612-d2ce321e1069"}]]}, "version": {"$add": ["$version", 1]}}]}]}, {"$mergeObjects": ["$$ROOT", {"_passed": false}]}]}]}]}, {"$mergeObjects": ["$$ROOT", {"_inconsistent_parties": true}]}]}}} ]
+
+Exception in thread "Thread-7" org.opentest4j.AssertionFailedError: First 2 parties should not fail
+	at org.junit.jupiter.api.AssertionUtils.fail(AssertionUtils.java:47)
+	at org.junit.jupiter.api.Assertions.fail(Assertions.java:157)
+	at atoma.test.barrier.BarrierTc010Test.lambda$testMoreNodesThanParties$0(BarrierTc010Test.java:43)
+	at java.base/java.lang.Thread.run(Thread.java:842)
+Caused by: java.util.concurrent.TimeoutException: Wait for barrier to trip timed out.
+	at atoma.core.DefaultCyclicBarrier.doAwait(DefaultCyclicBarrier.java:315)
+	at atoma.core.DefaultCyclicBarrier.await(DefaultCyclicBarrier.java:231)
+	at atoma.test.barrier.BarrierTc010Test.lambda$testMoreNodesThanParties$0(BarrierTc010Test.java:40)
+	... 1 more
+
+
+BARRIER-TC-021: 所有节点通过后自动重置屏障
+
+org.opentest4j.AssertionFailedError: All parties should pass the first barrier ==> expected: <true> but was: <false>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:158)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:139)
+	at org.junit.jupiter.api.AssertTrue.failNotTrue(AssertTrue.java:69)
+	at org.junit.jupiter.api.AssertTrue.assertTrue(AssertTrue.java:41)
+	at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:228)
+	at atoma.test.barrier.BarrierTc021Test.testAutomaticResetAfterPass(BarrierTc021Test.java:45)
+
+20:10:17.559 [Test worker] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:17.574 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:17.581 [atoma-ttl-worker-1] DEBUG atoma.core.DefaultLease - Lease [384b2509-1fc8-4ce3-b4cb-20eae540948b] renew completed. Previous expire time: 2026-02-04T12:10:49.567Z Next expire time: 2026-02-04T12:11:21.567Z
+20:10:17.953 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:21.578 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:21.585 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Deleted 1 empty read-write lock documents
+20:10:21.957 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:23.577 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+
+
+Exception in thread "Thread-10" org.opentest4j.AssertionFailedError: Await should not fail on first pass
+	at org.junit.jupiter.api.AssertionUtils.fail(AssertionUtils.java:47)
+	at org.junit.jupiter.api.Assertions.fail(Assertions.java:157)
+	at atoma.test.barrier.BarrierTc021Test.lambda$testAutomaticResetAfterPass$0(BarrierTc021Test.java:40)
+	at java.base/java.lang.Thread.run(Thread.java:842)
+Caused by: java.util.concurrent.TimeoutException: Wait for barrier to trip timed out.
+	at atoma.core.DefaultCyclicBarrier.doAwait(DefaultCyclicBarrier.java:315)
+	at atoma.core.DefaultCyclicBarrier.await(DefaultCyclicBarrier.java:231)
+	at atoma.test.barrier.BarrierTc021Test.lambda$testAutomaticResetAfterPass$0(BarrierTc021Test.java:37)
+	... 1 more
+
+
+BARRIER-TC-047: 使用特殊字符的屏障ID
+
+org.opentest4j.AssertionFailedError: All parties should pass for ID: barrier-with-hyphens ==> expected: <true> but was: <false>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:158)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:139)
+	at org.junit.jupiter.api.AssertTrue.failNotTrue(AssertTrue.java:69)
+	at org.junit.jupiter.api.AssertTrue.assertTrue(AssertTrue.java:41)
+	at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:228)
+	at atoma.test.barrier.BarrierTc047Test.testSpecialCharacterIds(BarrierTc047Test.java:53)
+
+20:10:07.372 [atoma-ttl-worker-1] DEBUG atoma.core.DefaultLease - Lease [2d970d61-077f-46b1-b468-e17379c5e4fc] renew completed. Previous expire time: 2026-02-04T12:10:39.362Z Next expire time: 2026-02-04T12:11:11.362Z
+
+Exception in thread "Thread-15" org.opentest4j.AssertionFailedError: Await should not fail for ID: barrier-with-hyphens
+	at org.junit.jupiter.api.AssertionUtils.fail(AssertionUtils.java:47)
+	at org.junit.jupiter.api.Assertions.fail(Assertions.java:157)
+	at atoma.test.barrier.BarrierTc047Test.lambda$testSpecialCharacterIds$0(BarrierTc047Test.java:47)
+	at java.base/java.lang.Thread.run(Thread.java:842)
+Caused by: java.util.concurrent.TimeoutException: Wait for barrier to trip timed out.
+	at atoma.core.DefaultCyclicBarrier.doAwait(DefaultCyclicBarrier.java:315)
+	at atoma.core.DefaultCyclicBarrier.await(DefaultCyclicBarrier.java:231)
+	at atoma.test.barrier.BarrierTc047Test.lambda$testSpecialCharacterIds$0(BarrierTc047Test.java:44)
+	... 1 more
+
+
+
+BARRIER-TC-047: 使用特殊字符的屏障ID
+
+org.opentest4j.AssertionFailedError: All parties should pass for ID: barrier/with/slashes ==> expected: <true> but was: <false>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:158)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:139)
+	at org.junit.jupiter.api.AssertTrue.failNotTrue(AssertTrue.java:69)
+	at org.junit.jupiter.api.AssertTrue.assertTrue(AssertTrue.java:41)
+	at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:228)
+	at atoma.test.barrier.BarrierTc047Test.testSpecialCharacterIds(BarrierTc047Test.java:53)
+
+20:10:13.705 [atoma-ttl-worker-1] DEBUG atoma.core.DefaultLease - Lease [a337627d-941c-4691-a841-b33876134059] renew completed. Previous expire time: 2026-02-04T12:10:45.659Z Next expire time: 2026-02-04T12:11:17.659Z
+20:10:13.982 [atoma-ttl-worker-1] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:17.669 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:17.977 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:19.667 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+
+Exception in thread "Thread-20" org.opentest4j.AssertionFailedError: Await should not fail for ID: barrier/with/slashes
+	at org.junit.jupiter.api.AssertionUtils.fail(AssertionUtils.java:47)
+	at org.junit.jupiter.api.Assertions.fail(Assertions.java:157)
+	at atoma.test.barrier.BarrierTc047Test.lambda$testSpecialCharacterIds$0(BarrierTc047Test.java:47)
+	at java.base/java.lang.Thread.run(Thread.java:842)
+Caused by: java.util.concurrent.TimeoutException: Wait for barrier to trip timed out.
+	at atoma.core.DefaultCyclicBarrier.doAwait(DefaultCyclicBarrier.java:315)
+	at atoma.core.DefaultCyclicBarrier.await(DefaultCyclicBarrier.java:231)
+	at atoma.test.barrier.BarrierTc047Test.lambda$testSpecialCharacterIds$0(BarrierTc047Test.java:44)
+	... 1 more
+
+
+[5] "barrier-ผสม-พิเศษ-😊"
+
+org.opentest4j.AssertionFailedError: All parties should pass for ID: barrier-ผสม-พิเศษ-😊 ==> expected: <true> but was: <false>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:158)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:139)
+	at org.junit.jupiter.api.AssertTrue.failNotTrue(AssertTrue.java:69)
+	at org.junit.jupiter.api.AssertTrue.assertTrue(AssertTrue.java:41)
+	at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:228)
+	at atoma.test.barrier.BarrierTc047Test.testSpecialCharacterIds(BarrierTc047Test.java:53)
+
+
+20:10:19.768 [Test worker] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:19.794 [atoma-ttl-worker-1] DEBUG atoma.core.DefaultLease - Lease [ec6773ab-f776-4095-940e-cfc407d1208e] renew completed. Previous expire time: 2026-02-04T12:10:51.778Z Next expire time: 2026-02-04T12:11:23.778Z
+20:10:19.981 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:21.985 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:23.786 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:25.790 [atoma-ttl-worker-0] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+20:10:25.810 [Test worker] INFO  a.s.m.c.CleanDeadResourceCommandHandler - Cleaned dead leases from 1 read-write locks, modified count: 1
+
+Exception in thread "Thread-22" org.opentest4j.AssertionFailedError: Await should not fail for ID: barrier-ผสม-พิเศษ-😊
+	at org.junit.jupiter.api.AssertionUtils.fail(AssertionUtils.java:47)
+	at org.junit.jupiter.api.Assertions.fail(Assertions.java:157)
+	at atoma.test.barrier.BarrierTc047Test.lambda$testSpecialCharacterIds$0(BarrierTc047Test.java:47)
+	at java.base/java.lang.Thread.run(Thread.java:842)
+Caused by: java.util.concurrent.TimeoutException: Wait for barrier to trip timed out.
+	at atoma.core.DefaultCyclicBarrier.doAwait(DefaultCyclicBarrier.java:315)
+	at atoma.core.DefaultCyclicBarrier.await(DefaultCyclicBarrier.java:231)
+	at atoma.test.barrier.BarrierTc047Test.lambda$testSpecialCharacterIds$0(BarrierTc047Test.java:44)
+	... 1 more

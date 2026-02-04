@@ -22,6 +22,7 @@ import atoma.api.Result;
 import atoma.api.coordination.command.CommandHandler;
 import atoma.api.coordination.command.CyclicBarrierCommand;
 import atoma.api.coordination.command.HandlesCommand;
+import atoma.storage.mongo.CommonUtils;
 import atoma.storage.mongo.command.MongoCommandHandler;
 import atoma.storage.mongo.command.MongoCommandHandlerContext;
 import com.google.auto.service.AutoService;
@@ -289,6 +290,10 @@ public class AwaitCommandHandler
           if (barrierDoc == null) {
             throw new AtomaStateException("Failed to find or create barrier document.");
           }
+
+          System.err.printf(
+              "Await pipeline: %s%n Result Barrier-Doc: %s%n",
+              CommonUtils.formatScript(pipeline), barrierDoc);
 
           if (barrierDoc.getBoolean("_inconsistent_parties", false)) {
             throw new AtomaStateException(

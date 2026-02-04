@@ -5,7 +5,7 @@ import org.bson.conversions.Bson;
 import java.util.List;
 import java.util.stream.Collectors;
 
-class CommonUtils {
+public class CommonUtils {
   public static String formatScript(List<? extends Bson> pipeline) {
     var text =
         String.format(

@@ -6,9 +6,23 @@ import atoma.core.AtomaClient;
 import atoma.storage.mongo.MongoCoordinationStore;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
+import org.openjdk.jmh.annotations.Benchmark;
+import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.Fork;
+import org.openjdk.jmh.annotations.Group;
+import org.openjdk.jmh.annotations.GroupThreads;
+import org.openjdk.jmh.annotations.Level;
+import org.openjdk.jmh.annotations.Measurement;
+import org.openjdk.jmh.annotations.Mode;
+import org.openjdk.jmh.annotations.OutputTimeUnit;
+import org.openjdk.jmh.annotations.Scope;
+import org.openjdk.jmh.annotations.Setup;
+import org.openjdk.jmh.annotations.State;
+import org.openjdk.jmh.annotations.TearDown;
+import org.openjdk.jmh.annotations.Warmup;
+
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
-import org.openjdk.jmh.annotations.*;
 
 @BenchmarkMode({Mode.AverageTime, Mode.Throughput})
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
@@ -30,7 +44,7 @@ public class CountDownLatchBenchmark {
   @Setup(Level.Trial)
   public void setupClient() {
     mongoClient =
-        MongoClients.create("mongodb://127.0.0.1:27017/atoma_benchmark?replicaSet=myReplicaSet");
+            MongoClients.create("mongodb://127.0.0.1:32768/atoma_benchmark?replicaSet=docker-rs");
     MongoCoordinationStore mongoCoordinationStore =
         new MongoCoordinationStore(mongoClient, "atoma_benchmark");
     atomaClient = new AtomaClient(mongoCoordinationStore);

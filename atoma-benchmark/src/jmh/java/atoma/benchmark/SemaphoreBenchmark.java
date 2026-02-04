@@ -43,7 +43,7 @@ public class SemaphoreBenchmark {
   @Setup
   public void setup() {
     mongoClient =
-        MongoClients.create("mongodb://127.0.0.1:27017/atoma_benchmark?replicaSet=myReplicaSet");
+            MongoClients.create("mongodb://127.0.0.1:32768/atoma_benchmark?replicaSet=docker-rs");
     MongoCoordinationStore mongoCoordinationStore =
         new MongoCoordinationStore(mongoClient, "atoma_benchmark");
     atomaClient = new AtomaClient(mongoCoordinationStore);

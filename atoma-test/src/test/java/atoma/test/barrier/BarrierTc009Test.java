@@ -47,7 +47,7 @@ public class BarrierTc009Test extends BaseTest {
       }
 
       Assertions.assertTrue(
-          passLatch.await(6, TimeUnit.SECONDS), "All parties should pass the barrier");
+          passLatch.await(5, TimeUnit.SECONDS), "All parties should pass the barrier");
       Assertions.assertEquals(
           0,
           barrier.getNumberWaiting(),
